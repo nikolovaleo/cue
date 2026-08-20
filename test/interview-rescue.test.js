@@ -6,6 +6,8 @@ const path = require('node:path');
 const { createQuestionFrame } = require('../src/question-frame');
 const { buildInterviewContext, detectCategory } = require('../src/interview-context');
 const { MODES } = require('../src/prompts');
+const { replayInterview } = require('../src/interview-replay');
+const { scoreRescueCard } = require('../src/interview-intelligence');
 
 function turn(channel, text) { return { channel, text, ts: Date.now() }; }
 
@@ -104,7 +106,7 @@ test('say prompt is a grounded rescue card, not a generic paragraph', () => {
   const user = MODES.say.build({ transcript, questionFrame: frame });
   const prompt = `${system}\n${user}`;
 
-  assert.match(prompt, /\*\*Say:\*\*/);
+  assert.match(prompt, /\*\*Say now:\*\*/);
   assert.match(prompt, /\*\*Anchors:\*\*/);
   assert.match(prompt, /fundamental distinction/i);
   assert.match(prompt, /never invent an employer, project, tool, metric, salary/i);
@@ -135,9 +137,45 @@ test('Electron production path uses QuestionFrame and latest-request replacement
   assert.match(main, /abortController\.abort\(\)/);
   assert.match(main, /llm:needs-confirmation/);
   assert.match(main, /questionFrame\.prohibitedAssistance/);
+  assert.match(main, /buildSemanticAnalyzerPrompt/);
+  assert.match(main, /buildVerifierPrompt/);
+  assert.match(main, /createInterviewMetrics/);
+  assert.match(main, /llm:replace/);
   assert.match(preload, /llm:queued/);
   assert.match(preload, /llm:needs-confirmation/);
+  assert.match(preload, /submitAnswerFeedback/);
   assert.match(renderer, /className\s*=\s*'question-target'/);
+  assert.match(renderer, /llm:verified/);
   assert.match(renderer, /Switching to the newest question/);
   assert.match(css, /\.question-target\s*\{/);
+  assert.match(css, /\.answer-meta\s*\{/);
+});
+
+test('temporal replay avoids statements, supersedes stale work, grounds salary, and honors AI prohibition', () => {
+  const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'interview-11pm-replay.json'), 'utf8'));
+  const result = replayInterview(fixture.events, { responseLatencyMs: 2500 });
+  const byId = Object.fromEntries(result.requests.map((request) => [request.id, request]));
+
+  assert.equal(byId['benefits-statement'].decision, 'listen');
+  assert.equal(byId['embedding-first'].supersededAt, 6800);
+  assert.equal(byId['embedding-correction'].intent, 'correction');
+  assert.match(byId['embedding-correction'].frame.candidateLastAnswer, /nearest neighbors/i);
+  assert.match(byId['context-window'].frame.exactQuestion, /multi-agent RAG system/i);
+  assert.match(byId['salary-confirmation'].memory.map((fact) => fact.value).join(' '), /2\.4 million colones/i);
+  assert.equal(byId['ai-prohibited'].decision, 'paused');
+  assert.equal(result.superseded, 1);
+});
+
+test('interview golden cards encode the hard technical distinctions', () => {
+  const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'interview-11pm-replay.json'), 'utf8'));
+  const cards = {
+    'embedding-correction': '**Say now:** An embedding model independently encodes items for broad retrieval; a reranker jointly scores each query-document pair for finer ordering. **Anchors:** embedding retrieves candidates; reranker reorders the shortlist.',
+    'context-window': '**Say now:** I would give each agent a bounded working context and retrieve only task-relevant state. **Anchors:** retrieve on demand; summarize durable state; enforce a token budget.',
+  };
+  for (const golden of fixture.goldens) {
+    const score = scoreRescueCard(cards[golden.id], golden);
+    assert.equal(score.relevance, 100, golden.id);
+    assert.equal(score.factuality, 100, golden.id);
+    assert.equal(score.speakability, 100, golden.id);
+  }
 });

@@ -4,6 +4,7 @@
 // then optionally the user's AI rules appended at the end.
 
 const { appendAiRules } = require('./profile-context');
+const { formatInterviewMemory } = require('./interview-intelligence');
 
 function formatTranscript(turns, limit) {
   const recent = limit ? turns.slice(-limit) : turns;
@@ -24,6 +25,7 @@ function formatQuestionFrame(frame) {
     `Transcription confidence: ${frame.confidence || 'low'}`,
     `Follow-up: ${frame.isFollowUp ? 'yes' : 'no'}`,
     `Interviewer is challenging the prior answer: ${frame.challengeToPriorAnswer ? 'yes' : 'no'}`,
+    `Answer intent: ${frame.intent || 'unknown'}`,
     frame.previousQuestion ? `Previous interviewer question: ${frame.previousQuestion}` : '',
     frame.candidateLastAnswer ? `Candidate's immediately prior answer: ${frame.candidateLastAnswer}` : '',
     liveFacts.salary ? `Verified live salary statement: ${liveFacts.salary}` : '',
@@ -45,10 +47,12 @@ const BASE_RULES =
 
 const RESCUE_CARD_RULES =
   'Produce a live rescue card that is easy to scan while speaking.\n' +
+  'Write the candidate-facing wording in first person so it can be said out loud without rewriting.\n' +
   'Use exactly this shape:\n' +
-  '**Say:** the actual words to say out loud, in first person, so the candidate can start immediately.\n' +
+  '**Say now:** one short first sentence the candidate can start immediately; put it first so streaming reveals it before anything else.\n' +
   '**Anchors:** 2–3 very short bullets with the essential ideas.\n' +
-  'Add **If challenged:** one corrective sentence only when the interviewer is challenging or following up on the previous answer.\n' +
+  'Add **Bridge:** only for time_to_think or clarification intent. It must buy a few seconds without evading the question.\n' +
+  'Add **If challenged:** one corrective sentence only when challengeToPriorAnswer is yes.\n' +
   'For technical questions, lead with the fundamental distinction, then the trade-off or use case. Do not merely echo the candidate\'s prior claim when it is wrong.\n' +
   'Keep technical and situational cards under 70 words total. Behavioral cards may use up to 110 words. No preamble or generic self-promotion.';
 
@@ -73,6 +77,7 @@ const MODES = {
     build(ctx) {
       const t = formatTranscript(ctx.transcript, 8);
       return 'CURRENT QUESTION FRAME:\n' + formatQuestionFrame(ctx.questionFrame) +
+        '\n\nVERIFIED LIVE MEMORY (quoted candidate statements with provenance):\n' + formatInterviewMemory(ctx.interviewMemory) +
         '\n\nRecent supporting conversation:\n' + (t || '(none)') +
         '\n\nCreate the rescue card for what I need right now.';
     }
@@ -96,6 +101,7 @@ const MODES = {
     build(ctx) {
       const t = formatTranscript(ctx.transcript, 8);
       return 'CURRENT QUESTION FRAME:\n' + formatQuestionFrame(ctx.questionFrame) +
+        '\n\nVERIFIED LIVE MEMORY (live statements override saved profile):\n' + formatInterviewMemory(ctx.interviewMemory) +
         '\n\nOnly use these recent turns as supporting evidence:\n' + (t || '(none)') +
         '\n\nReturn the rescue card for the exact question above.';
     }
@@ -181,6 +187,7 @@ const MODES = {
     },
     build(ctx) {
       return 'CONFIRMED QUESTION FRAME:\n' + formatQuestionFrame(ctx.questionFrame) +
+        '\n\nVERIFIED LIVE MEMORY:\n' + formatInterviewMemory(ctx.interviewMemory) +
         '\n\nReturn the rescue card for this question only.';
     }
   },

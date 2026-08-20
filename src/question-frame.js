@@ -150,6 +150,7 @@ function createQuestionFrame({ transcript, explicitQuestion = '' } = {}) {
 
   return {
     exactQuestion,
+    confirmedByUser: !!explicit,
     language: detectLanguage(exactQuestion),
     confidence: confidenceFor(exactQuestion, !!explicit),
     requiresResponse,

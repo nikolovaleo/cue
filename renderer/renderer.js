@@ -29,6 +29,7 @@
   let caretEl = null;
   let responseCount = 0;
   const MAX_RESPONSES = 20;
+  const responseGroups = new Map();
 
   const messages = $('#messages');
 
@@ -1099,15 +1100,22 @@
   cue.on('vad:state', ({ channel, speaking }) => {
     setLiveDotState(speaking ? 'speaking' : 'idle');
   });
-  cue.on('llm:start', ({ userBubble, small, category, questionFrame }) => {
+  cue.on('llm:start', ({ responseId, userBubble, small, category, questionFrame }) => {
     responseCount++;
     if (responseCount > MAX_RESPONSES) {
       const oldest = messages.querySelector('.response-group');
-      if (oldest) oldest.remove();
+      if (oldest) {
+        if (oldest.dataset.responseId) responseGroups.delete(oldest.dataset.responseId);
+        oldest.remove();
+      }
       responseCount = MAX_RESPONSES;
     }
     const group = document.createElement('div');
-    group.className = 'response-group';
+    group.className = 'response-group' + (questionFrame ? ' rescue-card' : '');
+    if (responseId) {
+      group.dataset.responseId = responseId;
+      responseGroups.set(responseId, group);
+    }
     const sep = document.createElement('div');
     sep.className = 'response-sep';
     sep.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -1140,6 +1148,33 @@
     caretEl.className = 'ai-caret';
     aiEl.appendChild(caretEl);
     group.appendChild(aiEl);
+    if (responseId && questionFrame && category !== 'paused' && category !== 'listen') {
+      const meta = document.createElement('div');
+      meta.className = 'answer-meta';
+      const verification = document.createElement('span');
+      verification.className = 'verification-chip pending';
+      verification.textContent = 'Checking answer…';
+      const latency = document.createElement('span');
+      latency.className = 'latency-chip';
+      latency.textContent = 'Timing…';
+      const feedback = document.createElement('div');
+      feedback.className = 'answer-feedback';
+      feedback.innerHTML = '<span>Useful?</span>';
+      [['Yes', true], ['No', false]].forEach(([label, useful]) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = label;
+        button.addEventListener('click', () => {
+          cue.submitAnswerFeedback(responseId, useful);
+          feedback.querySelectorAll('button').forEach((item) => { item.disabled = true; });
+          feedback.classList.add(useful ? 'useful' : 'not-useful');
+          showToast('Feedback saved locally', 1400);
+        });
+        feedback.appendChild(button);
+      });
+      meta.append(verification, latency, feedback);
+      group.appendChild(meta);
+    }
     messages.appendChild(group);
     // Use requestAnimationFrame so the DOM is fully updated before scrolling
     requestAnimationFrame(() => {
@@ -1159,6 +1194,48 @@
       finalizeAi();
     }
     setBusy(true);
+  });
+  cue.on('llm:stage', ({ stage, responseId }) => {
+    const labels = {
+      understanding: 'Reconstructing the exact question…',
+      verifying: 'Checking technical accuracy…',
+    };
+    showToast(labels[stage] || 'Working…', 1800);
+    const group = responseId ? responseGroups.get(responseId) : null;
+    const chip = group && group.querySelector('.verification-chip');
+    if (chip && stage === 'verifying') chip.textContent = 'Verifying…';
+  });
+  cue.on('llm:replace', ({ responseId, text }) => {
+    const group = responseGroups.get(responseId);
+    const target = group && group.querySelector('.ai-text');
+    if (!target || !text) return;
+    target.dataset.raw = text;
+    target.innerHTML = renderMarkdown(text);
+    if (target === aiEl) caretEl = null;
+    group.classList.add('answer-corrected');
+  });
+  cue.on('llm:verified', ({ responseId, verification, skipped }) => {
+    const group = responseGroups.get(responseId);
+    const chip = group && group.querySelector('.verification-chip');
+    if (!chip) return;
+    chip.classList.remove('pending');
+    if (!verification) {
+      chip.classList.add('unverified');
+      chip.textContent = skipped ? 'Fast answer · not independently verified' : 'Verification unavailable';
+      return;
+    }
+    const average = Math.round((verification.relevance + verification.factuality + verification.speakability) / 3);
+    chip.classList.add(verification.ok ? 'verified' : 'corrected');
+    chip.textContent = verification.ok ? `Verified ${average}%` : `Corrected ${average}%`;
+    chip.title = `Relevance ${verification.relevance}% · Factuality ${verification.factuality}% · Speakability ${verification.speakability}%`;
+  });
+  cue.on('llm:metrics', (metric) => {
+    const group = metric && responseGroups.get(metric.responseId);
+    const chip = group && group.querySelector('.latency-chip');
+    if (!chip) return;
+    const first = metric.firstTokenMs == null ? '—' : `${(metric.firstTokenMs / 1000).toFixed(1)}s`;
+    chip.textContent = `First words ${first} · total ${(metric.totalMs / 1000).toFixed(1)}s`;
+    chip.title = `Understanding ${metric.semanticMs}ms · generation ${metric.generationMs || 0}ms · verification ${metric.verifierMs}ms`;
   });
   cue.on('llm:needs-confirmation', ({ question }) => {
     const reconstructed = (question || '').trim();

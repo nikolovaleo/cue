@@ -110,6 +110,11 @@ function startAppLink(deps) {
     }),
   });
 
+  // Socket failures are already handled by start()'s rejected promise below.
+  // Consume the EventEmitter "error" event too so a busy optional link can
+  // never terminate Cue before that promise handler runs.
+  link.on('error', () => {});
+
   // Both directions are recorded, because an action that changes what the
   // microphone is doing should be visible afterwards in the same place a user
   // or a patch agent looks for anything else that happened.

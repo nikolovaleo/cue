@@ -29,6 +29,10 @@ class OpenAIRealtimeSTT {
     this._reconnectDelay = 1000;
     this._pendingAudio = [];
     this._sessionReady = false;
+    this._audioSinceCommitBytes = 0;
+    this._pendingCommits = 0;
+    this._finalWaiters = new Set();
+    this._interimByItem = new Map();
   }
 
   async connect() {
@@ -106,14 +110,20 @@ class OpenAIRealtimeSTT {
 
       case 'conversation.item.input_audio_transcription.delta':
         if (event.delta) {
-          this.onInterim(event.delta);
+          const itemId = event.item_id || '__current__';
+          const accumulated = (this._interimByItem.get(itemId) || '') + event.delta;
+          this._interimByItem.set(itemId, accumulated);
+          this.onInterim(accumulated.trimStart());
         }
         break;
 
       case 'conversation.item.input_audio_transcription.completed':
+        this._interimByItem.delete(event.item_id || '__current__');
+        this.onInterim('');
         if (event.transcript && event.transcript.trim()) {
           this.onTranscript(event.transcript.trim());
         }
+        this._settleCommittedTurn();
         break;
 
       case 'input_audio_buffer.speech_started':
@@ -136,20 +146,74 @@ class OpenAIRealtimeSTT {
   }
 
   sendAudio(pcmBuffer) {
+    const pcm = Buffer.from(pcmBuffer);
     if (!this.connected || !this._sessionReady) {
       // Buffer audio until session is ready (max 5 seconds worth)
-      this._pendingAudio.push(pcmBuffer);
-      if (this._pendingAudio.length > 80) this._pendingAudio.shift();
+      this._pendingAudio.push(pcm);
+      this._audioSinceCommitBytes += pcm.length;
+      if (this._pendingAudio.length > 80) {
+        const dropped = this._pendingAudio.shift();
+        this._audioSinceCommitBytes = Math.max(0, this._audioSinceCommitBytes - dropped.length);
+      }
       return;
     }
 
     // Resample 16kHz -> 24kHz (linear interpolation) since the API requires 24kHz
-    const resampled = this._resample16to24(Buffer.from(pcmBuffer));
+    this._audioSinceCommitBytes += pcm.length;
+    const resampled = this._resample16to24(pcm);
     const b64 = resampled.toString('base64');
     this._sendEvent({
       type: 'input_audio_buffer.append',
       audio: b64
     });
+  }
+
+  // gpt-realtime-whisper does not run server VAD. Cue's local VAD must commit
+  // each completed utterance before OpenAI emits a final transcript event.
+  commit() {
+    const minCommitBytes = 16000 * 2 * 0.1; // Realtime requires >=100 ms of PCM.
+    if (!this.connected || !this._sessionReady || this._audioSinceCommitBytes < minCommitBytes) {
+      return false;
+    }
+    if (!this._sendEvent({ type: 'input_audio_buffer.commit' })) return false;
+    this._audioSinceCommitBytes = 0;
+    this._pendingCommits++;
+    return true;
+  }
+
+  // Used before an answer is generated so its prompt includes speech whose
+  // final transcription event is still crossing the WebSocket.
+  waitForFinal({ commitCurrent = false, timeoutMs = 2000 } = {}) {
+    if (commitCurrent) this.commit();
+    if (this._pendingCommits === 0) return Promise.resolve(true);
+
+    return new Promise((resolve) => {
+      const waiter = { resolve, timer: null };
+      waiter.timer = setTimeout(() => {
+        this._finalWaiters.delete(waiter);
+        resolve(false);
+      }, timeoutMs);
+      this._finalWaiters.add(waiter);
+    });
+  }
+
+  _settleCommittedTurn() {
+    if (this._pendingCommits > 0) this._pendingCommits--;
+    if (this._pendingCommits !== 0) return;
+    for (const waiter of this._finalWaiters) {
+      clearTimeout(waiter.timer);
+      waiter.resolve(true);
+    }
+    this._finalWaiters.clear();
+  }
+
+  _resolveFinalWaiters(result) {
+    this._pendingCommits = 0;
+    for (const waiter of this._finalWaiters) {
+      clearTimeout(waiter.timer);
+      waiter.resolve(result);
+    }
+    this._finalWaiters.clear();
   }
 
   _resample16to24(pcm16kHz) {
@@ -184,7 +248,9 @@ class OpenAIRealtimeSTT {
   _sendEvent(event) {
     if (this.ws && this.ws.readyState === 1) { // WebSocket.OPEN
       this.ws.send(JSON.stringify(event));
+      return true;
     }
+    return false;
   }
 
   _attemptReconnect() {
@@ -204,6 +270,9 @@ class OpenAIRealtimeSTT {
   disconnect() {
     this._sessionReady = false;
     this._pendingAudio = [];
+    this._audioSinceCommitBytes = 0;
+    this._interimByItem.clear();
+    this._resolveFinalWaiters(false);
     if (this.ws) {
       this.ws.close(1000);
       this.ws = null;

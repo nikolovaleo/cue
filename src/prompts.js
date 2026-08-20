@@ -15,6 +15,21 @@ function buildSystem(base, contextBlock) {
   return contextBlock + '\n\n' + base;
 }
 
+function formatQuestionFrame(frame) {
+  if (!frame || !frame.exactQuestion) return '(No reliable current question was extracted.)';
+  const liveFacts = frame.liveFacts || {};
+  return [
+    `Exact interviewer question: ${frame.exactQuestion}`,
+    `Answer language: ${frame.language || 'same-as-question'}`,
+    `Transcription confidence: ${frame.confidence || 'low'}`,
+    `Follow-up: ${frame.isFollowUp ? 'yes' : 'no'}`,
+    `Interviewer is challenging the prior answer: ${frame.challengeToPriorAnswer ? 'yes' : 'no'}`,
+    frame.previousQuestion ? `Previous interviewer question: ${frame.previousQuestion}` : '',
+    frame.candidateLastAnswer ? `Candidate's immediately prior answer: ${frame.candidateLastAnswer}` : '',
+    liveFacts.salary ? `Verified live salary statement: ${liveFacts.salary}` : '',
+  ].filter(Boolean).join('\n');
+}
+
 // Apply AI rules to a system prompt if the mode wants them. LeetCode returns
 // the prompt unchanged — code answers should stay strict regardless of how the
 // user wants the AI to chat.
@@ -24,7 +39,18 @@ function applyRules(prompt, aiRules, mode) {
 }
 
 const BASE_RULES =
-  'Always respond in clear, natural English. Never switch to Hindi or any other language unless the user explicitly asks for it. ';
+  'Answer in the language of the exact interviewer question. Preserve standard English technical terms when that is natural. ' +
+  'Treat the live interview as the most current source of truth, ahead of saved profile fields. ' +
+  'Never invent an employer, project, tool, metric, salary, responsibility, or result. ';
+
+const RESCUE_CARD_RULES =
+  'Produce a live rescue card that is easy to scan while speaking.\n' +
+  'Use exactly this shape:\n' +
+  '**Say:** the actual words to say out loud, in first person, so the candidate can start immediately.\n' +
+  '**Anchors:** 2–3 very short bullets with the essential ideas.\n' +
+  'Add **If challenged:** one corrective sentence only when the interviewer is challenging or following up on the previous answer.\n' +
+  'For technical questions, lead with the fundamental distinction, then the trade-off or use case. Do not merely echo the candidate\'s prior claim when it is wrong.\n' +
+  'Keep technical and situational cards under 70 words total. Behavioral cards may use up to 110 words. No preamble or generic self-promotion.';
 
 const MODES = {
 
@@ -38,22 +64,17 @@ const MODES = {
       return applyRules(buildSystem(
         'You are cue, a discreet real-time copilot overlaid on the user\'s screen during an interview or coding session. ' +
         BASE_RULES +
-        'Look at the screenshot and the recent conversation, decide what the user needs RIGHT NOW, and deliver it directly with no preamble.\n\n' +
-        'Detect the question type and respond accordingly:\n' +
-        '• BEHAVIORAL ("tell me about a time…"): Give a complete STAR answer (Situation, Task, Action, Result) using the candidate\'s real stories when available. Be specific, include metrics, 3–4 sentences.\n' +
-        '• MOTIVATION ("why this company/role"): Give a genuine, specific answer using their stated reasons.\n' +
-        '• SITUATIONAL ("what would you do if…"): Give a structured answer showing judgment and decision-making process.\n' +
-        '• EXPERIENCE ("tell me about your role at X"): Draw from the resume to give a specific, proud answer.\n' +
-        '• TECHNICAL/CONCEPTUAL: Explain clearly with examples. For LeetCode: short approach + solution + complexity.\n' +
-        '• COMPENSATION ("salary expectations"): Use their stated target, give a confident range.\n' +
-        '• "Any questions for us?": Offer 2–3 of their prepared questions.\n\n' +
-        'Write in first person as if the candidate is speaking. No preamble, no "Here\'s what you could say". Just the answer.',
+        'Look at the screenshot and the current question frame, decide what the user needs RIGHT NOW, and deliver it directly with no preamble.\n\n' +
+        'Use verified STAR material for behavioral questions, explicit profile reasons for motivation, live facts for compensation, and the fundamental distinction plus trade-off for technical questions.\n\n' +
+        RESCUE_CARD_RULES,
         contextBlock
       ), aiRules, 'assist');
     },
     build(ctx) {
-      const t = formatTranscript(ctx.transcript, 14);
-      return 'Recent conversation:\n' + (t || '(none)') + '\n\nRespond with exactly what I should say right now.';
+      const t = formatTranscript(ctx.transcript, 8);
+      return 'CURRENT QUESTION FRAME:\n' + formatQuestionFrame(ctx.questionFrame) +
+        '\n\nRecent supporting conversation:\n' + (t || '(none)') +
+        '\n\nCreate the rescue card for what I need right now.';
     }
   },
 
@@ -65,25 +86,18 @@ const MODES = {
     resumeMode: 'say',
     buildSystem(contextBlock, aiRules) {
       return applyRules(buildSystem(
-        'You are cue, whispering the perfect reply to the candidate during a live interview. ' +
+        'You are cue, producing a precise rescue card during a live interview. ' +
         BASE_RULES +
-        '"Them" is the interviewer; "You" is the candidate.\n\n' +
-        'Draft ONE natural, confident reply the candidate can say out loud, in first person.\n\n' +
-        'Rules by question type:\n' +
-        '• BEHAVIORAL: Use a real STAR story from their background. Situation (1 sentence) → Task (1 sentence) → Action (2–3 sentences, specific steps) → Result (1 sentence with metric if possible). Never generic.\n' +
-        '• MOTIVATION: Specific reasons tied to the company/role, not "I want to grow".\n' +
-        '• SITUATIONAL: Show structured thinking — "I\'d first X, then Y, because Z".\n' +
-        '• EXPERIENCE: Reference the specific role/project from their resume.\n' +
-        '• COMPENSATION: State the target range confidently without over-explaining.\n' +
-        '• TECHNICAL: Give a clear, confident explanation. Use analogies for non-technical interviewers.\n\n' +
-        'No quotes, no preamble. Write the actual words to say. 2–5 sentences.',
+        '"Them" is the interviewer; "You" is the candidate. Focus on the exact current question, not the general topic of the interview.\n\n' +
+        RESCUE_CARD_RULES,
         contextBlock
       ), aiRules, 'say');
     },
     build(ctx) {
-      const t = formatTranscript(ctx.transcript, 16);
-      return 'Interview conversation so far:\n' + (t || '(listening not started yet)') +
-        '\n\nWhat should I say next?';
+      const t = formatTranscript(ctx.transcript, 8);
+      return 'CURRENT QUESTION FRAME:\n' + formatQuestionFrame(ctx.questionFrame) +
+        '\n\nOnly use these recent turns as supporting evidence:\n' + (t || '(none)') +
+        '\n\nReturn the rescue card for the exact question above.';
     }
   },
 
@@ -158,23 +172,16 @@ const MODES = {
     resumeMode: 'say',  // same context budget as 'say'
     buildSystem(contextBlock, aiRules) {
       return applyRules(buildSystem(
-        'You are cue, whispering a direct answer to the candidate for ONE specific question. ' +
+        'You are cue, producing a rescue card for ONE confirmed interview question. ' +
         BASE_RULES +
-        'The interviewer\'s exact question is provided below. Focus ONLY on answering that question — ignore any other conversation context.\n\n' +
-        'Rules:\n' +
-        '• BEHAVIORAL ("tell me about a time…"): STAR format using real stories from the candidate\'s background. Situation → Task → Action → Result. Include metrics if available.\n' +
-        '• MOTIVATION ("why this company/role"): Specific, genuine reasons from their stated preferences.\n' +
-        '• TECHNICAL: Clear explanation with a concrete example from their experience.\n' +
-        '• EXPERIENCE: Reference specific roles/projects from their resume.\n' +
-        '• COMPENSATION: State the salary target confidently in one sentence.\n' +
-        '• SITUATIONAL: Structured thinking — "First I would X, then Y, because Z."\n\n' +
-        'Write in first person, as the candidate speaking. No preamble. 2–5 sentences.',
+        'Focus ONLY on the confirmed question in the QuestionFrame. Use the prior answer only to correct or extend it on a follow-up.\n\n' +
+        RESCUE_CARD_RULES,
         contextBlock
       ), aiRules, 'answerThis');
     },
     build(ctx) {
-      // Only pass the specific question — not the full transcript history
-      return 'Answer this specific interview question:\n\n"' + (ctx.userText || '(no question provided)') + '"\n\nGive the full answer the candidate should say out loud.';
+      return 'CONFIRMED QUESTION FRAME:\n' + formatQuestionFrame(ctx.questionFrame) +
+        '\n\nReturn the rescue card for this question only.';
     }
   },
 
@@ -195,4 +202,4 @@ const MODES = {
   }
 };
 
-module.exports = { MODES, formatTranscript };
+module.exports = { MODES, formatTranscript, formatQuestionFrame };

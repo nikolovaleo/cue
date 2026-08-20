@@ -147,7 +147,13 @@
 
   // ---- actions -----------------------------------------------------------
   function runMode(mode, text) {
-    if (busy) return;
+    if (busy) {
+      if (mode === 'say' || mode === 'answerThis' || mode === 'assist') {
+        cue.ask({ mode, text: text || '' });
+        showToast('Switching to the newest question…', 1800);
+      }
+      return;
+    }
     setBusy(true);
     cue.ask({ mode, text: text || '' });
   }
@@ -167,6 +173,7 @@
   let questionFinalizeTimer = null;
   let softClearTimer = null;
   let userSpeechStart = null;
+  let candidateTurnSinceQuestion = false;
 
   // Question history for undo (Ctrl+Z)
   const questionHistory = [];
@@ -328,8 +335,19 @@
     clearTimeout(softClearTimer);
     composer.classList.remove('stt-dimmed');
 
+    // A substantive candidate turn closes the previous question. The next
+    // interviewer speech starts a new block instead of being appended to the
+    // entire interview history in the composer.
+    if (candidateTurnSinceQuestion && inputFromSTT && input.value.trim()) {
+      saveToQuestionHistory(input.value);
+      input.value = '';
+      lastSTTValue = '';
+    }
+    candidateTurnSinceQuestion = false;
+
     const current = input.value.trim();
-    const newText = current ? current + ' ' + text : text;
+    const combined = current ? current + ' ' + text : text;
+    const newText = combined.length > 900 ? combined.slice(-900).replace(/^\S*\s+/, '') : combined;
     input.value = newText;
     inputFromSTT = true;
     lastSTTValue = newText; // FIX #6: Track the STT value for edit detection
@@ -393,6 +411,7 @@
         saveToQuestionHistory(input.value);
         input.value = '';
         inputFromSTT = false;
+        candidateTurnSinceQuestion = false;
         composer.classList.remove('stt-filling', 'stt-dimmed', 'stt-ready', 'stt-accumulating');
         syncPlaceholder();
         updateSendButtonState(); // FIX #9: Update send button state
@@ -408,6 +427,7 @@
     saveToQuestionHistory(input.value);
     input.value = '';
     inputFromSTT = false;
+    candidateTurnSinceQuestion = false;
     lastSTTValue = ''; // FIX #6: Clear the tracked STT value
     userSpeechStart = null;
     composer.classList.remove('stt-filling', 'stt-dimmed', 'stt-ready', 'stt-accumulating');
@@ -488,6 +508,7 @@
     
     input.value = '';
     inputFromSTT = false;
+    candidateTurnSinceQuestion = false;
     lastSTTValue = ''; // FIX #6: Clear tracked STT value
     userSpeechStart = null;
     composer.classList.remove('stt-filling', 'stt-dimmed', 'stt-ready', 'stt-accumulating');
@@ -1078,7 +1099,7 @@
   cue.on('vad:state', ({ channel, speaking }) => {
     setLiveDotState(speaking ? 'speaking' : 'idle');
   });
-  cue.on('llm:start', ({ userBubble, small, category }) => {
+  cue.on('llm:start', ({ userBubble, small, category, questionFrame }) => {
     responseCount++;
     if (responseCount > MAX_RESPONSES) {
       const oldest = messages.querySelector('.response-group');
@@ -1103,6 +1124,15 @@
       pill.textContent = category.charAt(0).toUpperCase() + category.slice(1);
       group.appendChild(pill);
     }
+    if (questionFrame && questionFrame.exactQuestion) {
+      const target = document.createElement('div');
+      target.className = 'question-target';
+      const confidence = questionFrame.confidence && questionFrame.confidence !== 'high'
+        ? ` · ${questionFrame.confidence} confidence`
+        : '';
+      target.textContent = `Answering: ${questionFrame.exactQuestion}${confidence}`;
+      group.appendChild(target);
+    }
     aiEl = document.createElement('div');
     aiEl.className = 'ai-text' + (small ? ' small' : '');
     aiEl.dataset.raw = '';
@@ -1123,6 +1153,27 @@
     if (!aiEl) startAi(true);
     aiEl.dataset.raw = message; finalizeAi(); setBusy(false);
   });
+  cue.on('llm:queued', () => {
+    if (aiEl) {
+      aiEl.dataset.raw += '\n\n_Stopped: a newer question arrived._';
+      finalizeAi();
+    }
+    setBusy(true);
+  });
+  cue.on('llm:needs-confirmation', ({ question }) => {
+    const reconstructed = (question || '').trim();
+    if (reconstructed) {
+      input.value = reconstructed;
+      inputFromSTT = true;
+      lastSTTValue = reconstructed;
+      composer.classList.add('stt-filling', 'stt-ready');
+      syncPlaceholder();
+      updateQuestionReadyState();
+    }
+    showToast('Transcript unclear · review it, then press Enter', 3500);
+    setBusy(false);
+    input.focus();
+  });
   cue.on('transcript', ({ channel, text }) => {
     if (!text || text.trim().length < 2 || /^[?!.,;:\-…]+$/.test(text.trim())) return;
     appendTranscriptHistoryTurn(channel, text, false);
@@ -1132,6 +1183,8 @@
       autoFillInputFromSTT(text);
     } else {
       // User spoke — soft clear (don't immediately wipe, wait to see if they're really answering)
+      const candidateWords = text.trim().split(/\s+/).filter(Boolean).length;
+      if (candidateWords >= 4 || text.trim().length >= 28) candidateTurnSinceQuestion = true;
       softClearSTTFill();
     }
   });

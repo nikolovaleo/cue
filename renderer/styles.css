@@ -931,6 +931,19 @@ button:focus { outline: none; }
   text-transform: uppercase; padding: 2px 9px; border-radius: var(--r-pill);
   margin: 6px 0 4px; animation: fadeUp 180ms ease both;
 }
+.question-target {
+  align-self: stretch;
+  margin: 6px 0 2px;
+  padding: 7px 10px;
+  border-left: 2px solid rgba(96,165,250,0.65);
+  background: rgba(59,130,246,0.08);
+  color: var(--tx-mut);
+  font-size: 11.5px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
+}
 
 /* ============================ STT status ============================ */
 #stt-status {

@@ -42,6 +42,8 @@ const DEFAULTS = {
   // Window position
   windowX: null,
   windowY: null,
+  windowWidth: null,
+  windowHeight: null,
   models: {
     openai: { fast: 'gpt-4o-mini', smart: 'gpt-4o' },
     anthropic: { fast: 'claude-3-5-haiku-latest', smart: 'claude-3-5-sonnet-latest' },

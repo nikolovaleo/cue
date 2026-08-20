@@ -5,6 +5,8 @@ const { OPTIONAL_API_KEY_PLACEHOLDER } = require('../src/openai-compatible');
 
 let capturedClientOptions = null;
 let capturedCompletionRequest = null;
+let capturedCompletionRequests = [];
+let completionCreateImpl = null;
 const originalModuleLoad = Module._load;
 
 Module._load = function loadWithOpenAIStub(request, parent, isMain) {
@@ -16,6 +18,8 @@ Module._load = function loadWithOpenAIStub(request, parent, isMain) {
           completions: {
             create: async (completionRequest) => {
               capturedCompletionRequest = completionRequest;
+              capturedCompletionRequests.push(completionRequest);
+              if (completionCreateImpl) return completionCreateImpl(completionRequest, capturedCompletionRequests.length);
               return [{ choices: [{ delta: { content: 'ok' } }] }];
             }
           }
@@ -46,6 +50,8 @@ function createCustomSettings(overrides = {}) {
 test.beforeEach(() => {
   capturedClientOptions = null;
   capturedCompletionRequest = null;
+  capturedCompletionRequests = [];
+  completionCreateImpl = null;
 });
 
 test('routes the Custom provider through the configured OpenAI-compatible endpoint', async () => {
@@ -89,6 +95,62 @@ test('does not apply the Custom Base URL to official OpenAI requests', async () 
   await llm.stream({ system: '', turns: [], onToken: () => {} });
 
   assert.deepEqual(capturedClientOptions, { apiKey: 'official-openai-key' });
+});
+
+test('official GPT-5 models use max_completion_tokens and developer instructions', async () => {
+  const llm = createLLM({
+    provider: 'openai',
+    smart: false,
+    apiKeys: { openai: 'official-openai-key' },
+    models: { openai: { fast: 'gpt-5.6-luna', smart: 'gpt-5.4-mini' } }
+  });
+
+  await llm.stream({ system: 'Be concise.', turns: [{ role: 'user', text: 'Hello' }], onToken: () => {} });
+
+  assert.equal(capturedCompletionRequest.max_completion_tokens, 700);
+  assert.equal('max_tokens' in capturedCompletionRequest, false);
+  assert.equal(capturedCompletionRequest.messages[0].role, 'developer');
+});
+
+test('official OpenAI falls back to max_tokens when an older model rejects max_completion_tokens', async () => {
+  completionCreateImpl = async (_request, attempt) => {
+    if (attempt === 1) {
+      const error = new Error("400 Unsupported parameter: 'max_completion_tokens'. Use 'max_tokens' instead.");
+      error.status = 400;
+      throw error;
+    }
+    return [{ choices: [{ delta: { content: 'ok' } }] }];
+  };
+  const llm = createLLM({
+    provider: 'openai',
+    smart: false,
+    apiKeys: { openai: 'official-openai-key' },
+    models: { openai: { fast: 'gpt-4o-mini', smart: 'gpt-4o' } }
+  });
+
+  assert.equal(await llm.stream({ system: '', turns: [], onToken: () => {} }), 'ok');
+  assert.equal(capturedCompletionRequests.length, 2);
+  assert.equal(capturedCompletionRequests[0].max_completion_tokens, 700);
+  assert.equal(capturedCompletionRequests[1].max_tokens, 700);
+  assert.equal('max_completion_tokens' in capturedCompletionRequests[1], false);
+});
+
+test('OpenAI-compatible endpoints fall forward when they require max_completion_tokens', async () => {
+  completionCreateImpl = async (_request, attempt) => {
+    if (attempt === 1) {
+      const error = new Error("400 Unsupported parameter: 'max_tokens'. Use 'max_completion_tokens' instead.");
+      error.status = 400;
+      throw error;
+    }
+    return [{ choices: [{ delta: { content: 'ok' } }] }];
+  };
+  const llm = createLLM(createCustomSettings());
+
+  assert.equal(await llm.stream({ system: '', turns: [], onToken: () => {} }), 'ok');
+  assert.equal(capturedCompletionRequests.length, 2);
+  assert.equal(capturedCompletionRequests[0].max_tokens, 700);
+  assert.equal(capturedCompletionRequests[1].max_completion_tokens, 700);
+  assert.equal('max_tokens' in capturedCompletionRequests[1], false);
 });
 
 test('reports incomplete Custom endpoint settings without making a request', () => {

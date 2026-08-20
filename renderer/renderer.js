@@ -559,6 +559,10 @@
   $('#hide-btn').addEventListener('click', toggleHide);
   cue.on('hide:toggle', toggleHide);
 
+  // The frameless window has no native close control, so the toolbar X must
+  // explicitly forward the action through preload to the main process.
+  $('#quit-btn').addEventListener('click', () => cue.quit());
+
   // Stop = start/stop listening. Kick off system-audio capture straight from the click so
   // the user-gesture is fresh for getDisplayMedia (loopback capture needs it).
   $('#stop-btn').addEventListener('click', async () => {
@@ -598,7 +602,7 @@
   }
 
   // ---- capture: mic (renderer side) — uses AudioWorklet (modern, off-main-thread) ----
-  let audioCtx = null, micStream = null, micWorklet = null;
+  let audioCtx = null, micStream = null, micWorklet = null, micSink = null;
   async function startMic() {
     if (micStream) return;
     try {
@@ -634,9 +638,15 @@
         micWorklet.port.onmessage = (e) => {
           cue.micPcm(e.data);
         };
+        // AudioWorklet is pull-driven. Keep it connected to a muted destination
+        // so Chromium continues invoking process() while never playing the mic.
+        micSink = audioCtx.createGain();
+        micSink.gain.value = 0;
         source.connect(micWorklet);
-        // Don't connect to destination — we just capture, don't play
-        cue.log('mic AudioWorklet processor attached');
+        micWorklet.connect(micSink);
+        micSink.connect(audioCtx.destination);
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+        cue.log('mic AudioWorklet processor attached; context=' + audioCtx.state);
       } catch (workletErr) {
         // Fallback to ScriptProcessor if AudioWorklet fails (shouldn't happen in Electron 33+)
         cue.log('AudioWorklet failed, falling back to ScriptProcessor: ' + workletErr.message);
@@ -671,6 +681,7 @@
       } else {
         showStatus('Microphone capture could not be started. Check your mic permissions and try again.');
       }
+      stopMic();
     }
   }
   function stopMic() {
@@ -683,12 +694,13 @@
       }
       micWorklet = null;
     }
+    if (micSink) { micSink.disconnect(); micSink = null; }
     if (audioCtx) { audioCtx.close(); audioCtx = null; }
     if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
   }
 
   // ---- capture: system/meeting audio (getDisplayMedia loopback, in cue's process) ----
-  let sysStream = null, sysCtx = null, sysWorklet = null, sysStarting = false;
+  let sysStream = null, sysCtx = null, sysWorklet = null, sysSink = null, sysStarting = false;
   async function startSystemAudio() {
     // Called both from the stop-btn click (fresh user gesture for getDisplayMedia) and from the
     // capture:state handler. getDisplayMedia is async, so `if (sysStream) return` alone loses the
@@ -698,6 +710,7 @@
     if (!navigator.mediaDevices || typeof navigator.mediaDevices.getDisplayMedia !== 'function') {
       cue.log('system audio unavailable: getDisplayMedia not supported');
       showStatus('Meeting audio capture is not available on this device build.');
+      sysStarting = false;
       return;
     }
     try {
@@ -724,8 +737,15 @@
         sysWorklet.port.onmessage = (e) => {
           cue.systemPcm(e.data);
         };
+        // As with the mic, keep the processor in a live (muted) graph so the
+        // browser continuously pulls loopback samples without echoing them.
+        sysSink = sysCtx.createGain();
+        sysSink.gain.value = 0;
         source.connect(sysWorklet);
-        cue.log('system audio: AudioWorklet capturing loopback');
+        sysWorklet.connect(sysSink);
+        sysSink.connect(sysCtx.destination);
+        if (sysCtx.state === 'suspended') await sysCtx.resume();
+        cue.log('system audio: AudioWorklet capturing loopback; context=' + sysCtx.state);
       } catch (workletErr) {
         // Fallback to ScriptProcessor
         cue.log('system audio AudioWorklet failed, using ScriptProcessor: ' + workletErr.message);
@@ -744,7 +764,10 @@
     } catch (err) {
       const message = err && err.message ? err.message : String(err);
       cue.log('system audio error: ' + message);
-      showStatus('Meeting audio could not be started. Grant screen/audio access to cue and try again.');
+      stopSystemAudio();
+      showStatus(cue.platform === 'win32'
+        ? 'Meeting audio could not be started through Windows loopback. Check that an output device is active, then try again.'
+        : 'Meeting audio could not be started. Grant screen/audio access to cue and try again.');
     } finally {
       sysStarting = false;
     }
@@ -759,6 +782,7 @@
       }
       sysWorklet = null;
     }
+    if (sysSink) { sysSink.disconnect(); sysSink = null; }
     if (sysCtx) { sysCtx.close(); sysCtx = null; }
     if (sysStream) { sysStream.getTracks().forEach((t) => t.stop()); sysStream = null; }
   }
@@ -953,8 +977,6 @@
       }
       // Don't auto-close sidebar — let user keep it open if they want
     }
-    updateSttStatus({ active, streaming });
-    if (active) { startMic(); } else { stopMic(); stopSystemAudio(); }
     if (active && mode === 'local') {
       sttState = 'local';
       const label = document.getElementById('stt-status');
@@ -1596,12 +1618,69 @@
   // ---- click-through: only the UI blocks the mouse; empty gaps pass to your screen ----
   let ignoring = null;
   function setIgnore(v) { if (v !== ignoring) { ignoring = v; cue.setIgnoreMouse(v); } }
+  const toolbar = $('#toolbar');
+  function protectDragRegion() {
+    const rect = toolbar.getBoundingClientRect();
+    cue.setProtectedMouseRegions([{
+      x: rect.left - 16,
+      y: rect.top - 12,
+      width: rect.width + 32,
+      height: rect.height + 24
+    }]);
+  }
+  protectDragRegion();
+  new ResizeObserver(protectDragRegion).observe(toolbar);
+  window.addEventListener('resize', protectDragRegion);
+  toolbar.addEventListener('pointerenter', () => setIgnore(false));
   document.addEventListener('mousemove', (e) => {
     const el = document.elementFromPoint(e.clientX, e.clientY);
-    const overUI = !!(el && el.closest && el.closest('#toolbar, #panel-wrap, #transcript-sidebar, #settings-scrim, #onboard-scrim, #consent-scrim'));
+    const overUI = !!(el && el.closest && el.closest('#toolbar, #panel-wrap, #transcript-sidebar, #settings-scrim, #onboard-scrim, #consent-scrim, .resize-handle'));
     setIgnore(!overUI);
   });
-  setIgnore(true); // start fully click-through; hovering the panel re-enables it
+  setIgnore(false); // start interactive; enable click-through only after a confirmed outside move
+
+  // Frameless transparent windows have a tiny native resize border. Provide
+  // large edge handles plus a labelled corner grip so resizing is discoverable.
+  const resizeHandles = [...document.querySelectorAll('.resize-handle')];
+  let resizeStart = null;
+  resizeHandles.forEach((handle) => {
+    handle.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      setIgnore(false);
+      resizeStart = {
+        handle,
+        mode: handle.dataset.resize,
+        pointerX: event.screenX,
+        pointerY: event.screenY,
+        width: window.innerWidth,
+        height: window.innerHeight
+      };
+      handle.setPointerCapture(event.pointerId);
+      handle.classList.add('active');
+    });
+    handle.addEventListener('pointermove', (event) => {
+      if (!resizeStart || resizeStart.handle !== handle) return;
+      const width = resizeStart.mode === 'height'
+        ? resizeStart.width
+        : resizeStart.width + event.screenX - resizeStart.pointerX;
+      const height = resizeStart.mode === 'width'
+        ? resizeStart.height
+        : resizeStart.height + event.screenY - resizeStart.pointerY;
+      cue.resizeWindow(width, height);
+    });
+  });
+  const finishResize = (event) => {
+    if (!resizeStart) return;
+    const activeHandle = resizeStart.handle;
+    resizeStart = null;
+    activeHandle.classList.remove('active');
+    if (activeHandle.hasPointerCapture(event.pointerId)) activeHandle.releasePointerCapture(event.pointerId);
+  };
+  resizeHandles.forEach((handle) => {
+    handle.addEventListener('pointerup', finishResize);
+    handle.addEventListener('pointercancel', finishResize);
+  });
 
   // ---- assistant access request ------------------------------------------
   // Shown here rather than as a native dialog because cue hides its dock icon:

@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const { looksLikeHallucination, buildVocabPrompt } = require('../src/stt');
-const { DeepgramStreamingSTT } = require('../src/stt-streaming');
+const { DeepgramStreamingSTT, OpenAIRealtimeSTT } = require('../src/stt-streaming');
 
 test('looksLikeHallucination drops Whisper silence artifacts', () => {
   ['', '   ', 'Thank you for watching.', 'thanks for watching', 'Bye-bye!', '👍👍'].forEach((s) => {
@@ -48,4 +48,34 @@ test('Deepgram drops hallucinated finals', () => {
   const d = new DeepgramStreamingSTT('k', { onTranscript: (t) => finals.push(t) });
   d._handleMessage({ type: 'Results', is_final: true, speech_final: true, channel: { alternatives: [{ transcript: 'Thank you.' }] } });
   assert.deepEqual(finals, []);
+});
+
+test('OpenAI Realtime accumulates transcript deltas for the live interim row', () => {
+  const interims = [];
+  const stt = new OpenAIRealtimeSTT('k', { onInterim: (text) => interims.push(text) });
+  stt._handleEvent({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'turn-1', delta: 'Tell me' });
+  stt._handleEvent({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'turn-1', delta: ' about yourself.' });
+  assert.deepEqual(interims, ['Tell me', 'Tell me about yourself.']);
+});
+
+test('OpenAI Realtime commits buffered speech and emits its finalized turn', async () => {
+  const sent = [];
+  const finals = [];
+  const stt = new OpenAIRealtimeSTT('k', { onTranscript: (text) => finals.push(text) });
+  stt.ws = { readyState: 1, send: (data) => sent.push(JSON.parse(data)) };
+  stt.connected = true;
+  stt._sessionReady = true;
+
+  stt.sendAudio(Buffer.alloc(3200));
+  assert.equal(stt.commit(), true);
+  const waiting = stt.waitForFinal({ timeoutMs: 100 });
+  stt._handleEvent({
+    type: 'conversation.item.input_audio_transcription.completed',
+    item_id: 'turn-1',
+    transcript: 'Tell me about yourself.'
+  });
+
+  assert.equal(await waiting, true);
+  assert.deepEqual(sent.map((event) => event.type), ['input_audio_buffer.append', 'input_audio_buffer.commit']);
+  assert.deepEqual(finals, ['Tell me about yourself.']);
 });

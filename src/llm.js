@@ -105,10 +105,38 @@ function stripDataUrl(dataUrl) {
   return m ? { mime: m[1], b64: m[2] } : null;
 }
 
-async function streamOpenAI({ apiKey, baseURL, model, system, turns, imageDataUrl, maxTokens, onToken }) {
+function isUnsupportedParameterError(error, parameter) {
+  const status = error && (error.status || error.statusCode || error.response?.status);
+  const errorParam = error && (error.param || error.error?.param);
+  const rawMessage = (error && (error.message || String(error))) || '';
+  const text = rawMessage.toLowerCase();
+  const mentionsParameter = String(errorParam || '').toLowerCase() === parameter || text.includes(parameter);
+  return mentionsParameter && (status === 400 || /\b400\b|unsupported parameter|unknown parameter|not supported/i.test(rawMessage));
+}
+
+async function createChatCompletionWithTokenLimit(client, request, maxTokens, preferMaxCompletionTokens) {
+  const primary = preferMaxCompletionTokens ? 'max_completion_tokens' : 'max_tokens';
+  const fallback = primary === 'max_completion_tokens' ? 'max_tokens' : 'max_completion_tokens';
+  try {
+    return await client.chat.completions.create({ ...request, [primary]: maxTokens });
+  } catch (error) {
+    // OpenAI's current models require max_completion_tokens, while some older
+    // or third-party OpenAI-compatible endpoints still only accept max_tokens.
+    // Retry once only when the server explicitly rejects the chosen field.
+    if (!isUnsupportedParameterError(error, primary)) throw error;
+    return client.chat.completions.create({ ...request, [fallback]: maxTokens });
+  }
+}
+
+function instructionRole(model, useDeveloperRole) {
+  if (!useDeveloperRole) return 'system';
+  return /^(?:gpt-5(?:[.-]|$)|o\d(?:[.-]|$))/i.test(String(model || '')) ? 'developer' : 'system';
+}
+
+async function streamOpenAI({ apiKey, baseURL, model, system, turns, imageDataUrl, maxTokens, onToken, preferMaxCompletionTokens = false, useDeveloperRole = false }) {
   const OpenAI = require('openai');
   const client = new OpenAI(baseURL ? { apiKey, baseURL } : { apiKey });
-  const messages = [{ role: 'system', content: system }];
+  const messages = [{ role: instructionRole(model, useDeveloperRole), content: system }];
   turns.forEach((t, i) => {
     const last = i === turns.length - 1;
     if (last && imageDataUrl && t.role === 'user') {
@@ -122,7 +150,12 @@ async function streamOpenAI({ apiKey, baseURL, model, system, turns, imageDataUr
       messages.push({ role: t.role, content: t.text });
     }
   });
-  const stream = await client.chat.completions.create({ model, messages, stream: true, max_tokens: maxTokens });
+  const stream = await createChatCompletionWithTokenLimit(
+    client,
+    { model, messages, stream: true },
+    maxTokens,
+    preferMaxCompletionTokens
+  );
   let full = '';
   for await (const part of stream) {
     const d = part.choices && part.choices[0] && part.choices[0].delta && part.choices[0].delta.content;
@@ -145,7 +178,7 @@ function normalizeAzureBaseURL(raw) {
 async function streamAzure({ apiKey, model, system, turns, imageDataUrl, maxTokens, onToken, endpoint }) {
   const url = normalizeAzureBaseURL(endpoint);
   if (!url) throw new Error('Missing Azure endpoint. Add your Azure AI Foundry or Azure OpenAI endpoint in Settings.');
-  const messages = [{ role: 'system', content: system }];
+  const messages = [{ role: instructionRole(model, true), content: system }];
   turns.forEach((t, i) => {
     const last = i === turns.length - 1;
     if (last && imageDataUrl && t.role === 'user') {
@@ -172,7 +205,12 @@ async function streamAzure({ apiKey, model, system, turns, imageDataUrl, maxToke
     };
     client = new OpenAI({ baseURL: url, apiKey, fetch: azureFetch });
   }
-  const stream = await client.chat.completions.create({ model, messages, stream: true, max_completion_tokens: maxTokens });
+  const stream = await createChatCompletionWithTokenLimit(
+    client,
+    { model, messages, stream: true },
+    maxTokens,
+    true
+  );
   let full = '';
   for await (const part of stream) {
     const d = part.choices && part.choices[0] && part.choices[0].delta && part.choices[0].delta.content;
@@ -340,7 +378,7 @@ function createLLM(settings) {
       if (!ready) throw new Error(configurationError || `Complete the ${provider} provider settings.`);
       const args = { apiKey, baseURL, endpoint, model, maxTokens, ...params, turns: sanitizeTurns(params.turns) };
       try {
-        if (provider === 'openai') return await streamOpenAI(args);
+        if (provider === 'openai') return await streamOpenAI({ ...args, preferMaxCompletionTokens: true, useDeveloperRole: true });
         if (provider === CUSTOM_PROVIDER) return await streamOpenAI(args);
         if (provider === 'ollama') return await streamOllama(args);
         if (provider === 'groq') return await streamOpenAI({ ...args, baseURL: 'https://api.groq.com/openai/v1' });

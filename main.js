@@ -1,3 +1,6 @@
+const { guardProcessPipes } = require('./src/console-pipe-guard');
+guardProcessPipes();
+
 const { app, BrowserWindow, ipcMain, globalShortcut, screen, session, desktopCapturer, shell, dialog, systemPreferences } = require('electron');
 const path = require('path');
 const os = require('os');
@@ -27,6 +30,12 @@ const { locateWhisperRuntime } = require('./src/whisper-runtime');
 const { LocalWhisperTranscriber } = require('./src/local-whisper-transcriber');
 
 let win = null;
+let mouseIgnored = false;
+let mouseIgnoreRequested = false;
+let protectedMouseRegions = [];
+let mouseProtectionTimer = null;
+const isPrimaryInstance = app.requestSingleInstanceLock();
+if (!isPrimaryInstance) app.quit();
 // Which global shortcuts cue actually holds. `globalShortcut.register` returns
 // false when another application already owns the combination, and nothing used
 // to look at that — so the only symptom was a key that did nothing. Iris reads
@@ -74,14 +83,20 @@ const vad = {
     offsetThreshold: 130,
     silenceFrames: 18,       // ~540ms silence before end
     onSpeechStart: () => send('vad:state', { channel: 'you', speaking: true }),
-    onSpeechEnd: (dur) => send('vad:state', { channel: 'you', speaking: false, durationMs: dur })
+    onSpeechEnd: (dur) => {
+      send('vad:state', { channel: 'you', speaking: false, durationMs: dur });
+      if (streamingSTT.you && typeof streamingSTT.you.commit === 'function') streamingSTT.you.commit();
+    }
   }),
   them: new AdaptiveVAD({
     onsetThreshold: 200,
     offsetThreshold: 120,
     silenceFrames: 20,       // ~600ms for remote audio (more forgiving)
     onSpeechStart: () => send('vad:state', { channel: 'them', speaking: true }),
-    onSpeechEnd: (dur) => send('vad:state', { channel: 'them', speaking: false, durationMs: dur })
+    onSpeechEnd: (dur) => {
+      send('vad:state', { channel: 'them', speaking: false, durationMs: dur });
+      if (streamingSTT.them && typeof streamingSTT.them.commit === 'function') streamingSTT.them.commit();
+    }
   })
 };
 // Pre-speech ring buffers (300ms) so we never clip the start of a word
@@ -180,11 +195,47 @@ async function getWhisperOverview() {
 }
 
 // -------- window --------
+function cursorIsInProtectedMouseRegion() {
+  if (!win || win.isDestroyed() || protectedMouseRegions.length === 0) return false;
+  const bounds = win.getBounds();
+  const cursor = screen.getCursorScreenPoint();
+  const x = cursor.x - bounds.x;
+  const y = cursor.y - bounds.y;
+  return protectedMouseRegions.some((region) => (
+    x >= region.x && x <= region.x + region.width &&
+    y >= region.y && y <= region.y + region.height
+  ));
+}
+
+function setWindowMouseIgnored(ignored) {
+  if (!win || win.isDestroyed()) return;
+  const next = !!ignored;
+  if (next === mouseIgnored) return;
+  win.setIgnoreMouseEvents(next, { forward: true });
+  mouseIgnored = next;
+}
+
+function syncWindowMouseIgnoreState() {
+  setWindowMouseIgnored(mouseIgnoreRequested && !cursorIsInProtectedMouseRegion());
+}
+
+function startMouseProtection() {
+  clearInterval(mouseProtectionTimer);
+  // Forwarded renderer mousemove events can arrive just after a fast click.
+  // Native cursor polling arms the Drag area first, so the click never lands
+  // in the application behind cue.
+  mouseProtectionTimer = setInterval(syncWindowMouseIgnoreState, 16);
+  if (typeof mouseProtectionTimer.unref === 'function') mouseProtectionTimer.unref();
+}
+
 function createWindow() {
   const { workArea } = screen.getPrimaryDisplay();
-  const W = 700, H = 600;
+  const MIN_W = 420, MIN_H = 360;
+  const DEFAULT_W = 700, DEFAULT_H = 600;
 
   const savedSettings = store.getSettings();
+  const W = Math.max(MIN_W, Math.min(Number(savedSettings.windowWidth) || DEFAULT_W, workArea.width));
+  const H = Math.max(MIN_H, Math.min(Number(savedSettings.windowHeight) || DEFAULT_H, workArea.height));
   let startX = Math.round(workArea.x + (workArea.width - W) / 2);
   let startY = workArea.y + 6;
 
@@ -204,6 +255,10 @@ function createWindow() {
     transparent: true,
     hasShadow: false,
     resizable: true,
+    maximizable: true,
+    thickFrame: true,
+    minWidth: MIN_W,
+    minHeight: MIN_H,
     skipTaskbar: true,
     alwaysOnTop: true,
     fullscreenable: false,
@@ -223,6 +278,10 @@ function createWindow() {
   }
 
   win = new BrowserWindow(winOptions);
+  mouseIgnored = false;
+  mouseIgnoreRequested = false;
+  protectedMouseRegions = [];
+  startMouseProtection();
 
   // Fix 2: Only call setContentProtection if the OS supports it.
   // On Windows, WDA_EXCLUDEFROMCAPTURE requires build 19041+ (Windows 10 May 2020 Update).
@@ -252,6 +311,17 @@ function createWindow() {
         store.setSettings({ windowX: x, windowY: y });
       }
     }, 500);
+  });
+
+  let resizeSaveTimer = null;
+  win.on('resized', () => {
+    clearTimeout(resizeSaveTimer);
+    resizeSaveTimer = setTimeout(() => {
+      if (win && !win.isDestroyed()) {
+        const [windowWidth, windowHeight] = win.getSize();
+        store.setSettings({ windowWidth, windowHeight });
+      }
+    }, 300);
   });
 
   win.setTitle('Microsoft Edge Update'); // set before load
@@ -418,6 +488,21 @@ function routeAudio(channel, pcmBuffer) {
   }
 }
 
+async function finalizeStreamingTranscript(timeoutMs = 2000) {
+  if (!streamingMode) return;
+  const waits = ['you', 'them'].map((channel) => {
+    const instance = streamingSTT[channel];
+    if (!instance || typeof instance.waitForFinal !== 'function') return null;
+    return instance.waitForFinal({
+      // If the user clicks while somebody is still speaking (or during the
+      // trailing-silence window), close that turn immediately.
+      commitCurrent: vad[channel].getState().isSpeaking,
+      timeoutMs
+    });
+  }).filter(Boolean);
+  if (waits.length) await Promise.all(waits);
+}
+
 // -------- capture toggle --------
 // Mic + system audio are both captured in the RENDERER (getUserMedia for the mic,
 // getDisplayMedia loopback for system audio) so they run inside cue's own process
@@ -496,14 +581,19 @@ async function runFeature(mode, userText) {
     const userBubble = def.userBubble !== null
       ? def.userBubble
       : (mode === 'ask' ? userText : mode === 'answerThis' ? `"${(userText || '').slice(0, 60)}${userText && userText.length > 60 ? '…' : ''}"` : null);
-    const category = mode !== 'leetcode' ? detectCategory(transcript) : null;
-    send('llm:start', { userBubble, small: !!def.small, category });
-
     if (!llm.ready) {
+      send('llm:start', { userBubble, small: !!def.small, category: null });
       const message = llm.configurationError || ('Complete the ' + settings.provider + ' provider settings. Model: ' + (llm.model || 'unset') + '.');
       send('llm:error', { message });
       return;
     }
+
+    // OpenAI Realtime emits finalized transcript text only after the input
+    // buffer is committed. Give that event a brief chance to land before the
+    // conversation snapshot is passed to "What should I say?" and related modes.
+    if (mode !== 'leetcode' && mode !== 'answerThis') await finalizeStreamingTranscript();
+    const category = mode !== 'leetcode' ? detectCategory(transcript) : null;
+    send('llm:start', { userBubble, small: !!def.small, category });
 
     let imageDataUrl = null;
     if (def.needsScreen) {
@@ -625,7 +715,44 @@ ipcMain.handle('transcript:clear', () => {
 ipcMain.on('ask', (_e, payload) => runFeature(payload.mode, payload.text));
 ipcMain.on('mic:pcm', (_e, arrayBuffer) => { if (state.capturing) routeAudio('you', arrayBuffer); });
 ipcMain.on('system:pcm', (_e, arrayBuffer) => { if (state.capturing) routeAudio('them', arrayBuffer); });
-ipcMain.on('mouse:ignore', (_e, v) => { if (win) win.setIgnoreMouseEvents(!!v, { forward: true }); });
+ipcMain.on('mouse:regions', (event, regions) => {
+  if (!win || win.isDestroyed() || event.sender !== win.webContents) return;
+  protectedMouseRegions = (Array.isArray(regions) ? regions : []).slice(0, 8).map((region) => ({
+    x: Number(region && region.x),
+    y: Number(region && region.y),
+    width: Number(region && region.width),
+    height: Number(region && region.height)
+  })).filter((region) => (
+    Number.isFinite(region.x) && Number.isFinite(region.y) &&
+    Number.isFinite(region.width) && Number.isFinite(region.height) &&
+    region.width > 0 && region.height > 0
+  ));
+  syncWindowMouseIgnoreState();
+});
+ipcMain.on('mouse:ignore', (event, v) => {
+  if (!win || win.isDestroyed() || event.sender !== win.webContents) return;
+  // Never make the native Drag hitbox click-through, even if the renderer's
+  // element hit-test briefly lags behind a fast cursor movement.
+  mouseIgnoreRequested = !!v;
+  syncWindowMouseIgnoreState();
+});
+ipcMain.on('window:resize', (event, requestedSize) => {
+  if (!win || win.isDestroyed() || event.sender !== win.webContents) return;
+  const width = Number(requestedSize && requestedSize.width);
+  const height = Number(requestedSize && requestedSize.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return;
+  const currentBounds = win.getBounds();
+  const { workArea } = screen.getDisplayMatching(currentBounds);
+  const nextWidth = Math.max(420, Math.min(Math.round(width), workArea.width));
+  const maxHeight = Math.max(360, workArea.y + workArea.height - currentBounds.y);
+  const nextHeight = Math.max(360, Math.min(Math.round(height), maxHeight));
+  // The custom grip grows from the bottom-right. When it reaches the display's
+  // right edge, slide the left edge outward so the user can keep widening the
+  // overlay up to the full work area without first moving the window manually.
+  const rightEdge = workArea.x + workArea.width;
+  const nextX = Math.max(workArea.x, Math.min(currentBounds.x, rightEdge - nextWidth));
+  win.setBounds({ x: nextX, y: currentBounds.y, width: nextWidth, height: nextHeight });
+});
 ipcMain.on('open-pane', (_e, url) => { shell.openExternal(url).catch(() => {}); });
 ipcMain.on('app:quit', () => app.quit());
 ipcMain.on('log', (_e, msg) => console.log('[renderer]', msg));
@@ -773,13 +900,15 @@ function launchApp() {
 
   // System-audio loopback for getDisplayMedia: hand back a screen source with 'loopback'
   // audio so the renderer can capture what's playing (Zoom/Meet) using cue's own grant.
-  session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
+  session.defaultSession.setDisplayMediaRequestHandler((mediaRequest, callback) => {
     desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
       if (!sources.length) return callback();
-      const request = { video: sources[0] };
-      if (isWindows) request.audio = true;
-      else request.audio = 'loopback';
-      callback(request);
+      const streams = { video: sources[0] };
+      // Electron does not accept a boolean here. Its display-media callback
+      // requires the named loopback source; passing `true` makes Chromium reject
+      // getDisplayMedia before the renderer receives either track.
+      if (mediaRequest.audioRequested) streams.audio = 'loopback';
+      callback(streams);
     }).catch(() => callback());
   }, { useSystemPicker: false });
 
@@ -805,6 +934,7 @@ function launchApp() {
 
 // -------- lifecycle --------
 app.whenReady().then(async () => {
+  if (!isPrimaryInstance) return;
   app.setName('MicrosoftEdgeUpdate');
   if (isWindows) {
     process.title = 'MicrosoftEdgeUpdate';
@@ -822,6 +952,12 @@ app.whenReady().then(async () => {
 
   launchApp();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+});
+
+app.on('second-instance', () => {
+  if (!win || win.isDestroyed()) return;
+  if (win.isMinimized()) win.restore();
+  win.showInactive();
 });
 
 app.on('will-quit', () => {

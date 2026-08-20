@@ -49,37 +49,42 @@ html, body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding-top: 14px;
+  padding: 14px 10px 10px;
+  min-width: 0;
   pointer-events: none;                  /* only the actual UI blocks; gaps pass through */
 }
-#toolbar, #panel-wrap, #settings-scrim, #onboard-scrim, #consent-scrim { pointer-events: auto; }
+#toolbar, #panel-wrap, #settings-scrim, #onboard-scrim, #consent-scrim, .resize-handle { pointer-events: auto; }
 #toolbar { -webkit-app-region: drag; }   /* drag the top pill to move the window */
-#panel-wrap, #panel, #messages, #action-row, #composer, #input, textarea, button, .act, .smart-pill, .more-btn, #send-btn, .s-close, .s-seg button, .ob-buttons button, .ob-ghost, .ob-primary { -webkit-app-region: no-drag; }
+#panel-wrap, #panel, #messages, #action-row, #composer, #input, textarea, button, .act, .smart-pill, .more-btn, #send-btn, .s-close, .s-seg button, .ob-buttons button, .ob-ghost, .ob-primary, .resize-handle { -webkit-app-region: no-drag; }
 
 /* ============================ Toolbar pill ============================ */
 #toolbar {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 5px 6px;
+  padding: 6px 7px;
   border-radius: var(--r-pill);
   background: rgba(28,30,38,0.85);
   border: 1px solid rgba(255,255,255,0.14);
   box-shadow: 0 8px 24px rgba(0,0,0,0.40), inset 0 1px 0 rgba(255,255,255,0.08);
   backdrop-filter: blur(24px) saturate(160%);
   -webkit-backdrop-filter: blur(24px) saturate(160%);
+  max-width: 100%;
+  flex-shrink: 0;
 }
 .drag-handle { -webkit-app-region: drag; }
 .drag-pill {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 4px 8px; border-radius: var(--r-pill);
+  min-height: 34px;
+  padding: 7px 14px; border-radius: var(--r-pill);
   background: rgba(255,255,255,0.06);
   color: rgba(255,255,255,0.8);
   font-size: 12px; font-weight: 600; letter-spacing: 0.01em;
   cursor: grab;
   -webkit-app-region: drag;
 }
-.drag-pill:hover { background: rgba(255,255,255,0.10); }
+.drag-pill:hover { background: rgba(56,189,248,0.16); box-shadow: inset 0 0 0 1px rgba(125,211,252,0.28); }
+.drag-pill:active { cursor: grabbing; }
 .drag-dots {
   width: 14px; height: 10px;
   display: inline-block;
@@ -147,7 +152,7 @@ html, body {
 .mic-perm-actions button.dismiss:hover { background: rgba(255,255,255,0.10); color: var(--tx-2); }
 
 /* ============================ Panel ============================ */
-#panel-wrap { position: relative; margin-top: 12px; width: min(624px, 94vw); }
+#panel-wrap { position: relative; margin-top: 12px; width: 100%; min-width: 0; }
 button:focus { outline: none; }
 #live-dot {
   position: absolute; top: -3px; left: -5px; z-index: 4;
@@ -166,7 +171,15 @@ button:focus { outline: none; }
   border-radius: var(--r-panel);
   box-shadow: 0 16px 48px rgba(0,0,0,0.45), 0 2px 8px rgba(0,0,0,0.30), inset 0 1px 0 rgba(255,255,255,0.10);
 }
-#panel { padding: 20px 22px; animation: overlayIn 260ms cubic-bezier(0.22,1,0.36,1); }
+#panel {
+  padding: 20px 22px;
+  animation: overlayIn 260ms cubic-bezier(0.22,1,0.36,1);
+  max-height: calc(100vh - 74px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
 #panel.collapsed { display: none; }
 
 /* ============================ Messages ============================ */
@@ -234,8 +247,8 @@ button:focus { outline: none; }
 
 /* ============================ Action row ============================ */
 #action-row {
-  display: flex; align-items: center; flex-wrap: nowrap; gap: 4px;
-  margin-top: 6px; white-space: nowrap;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  margin-top: 6px; white-space: normal;
 }
 .act {
   display: inline-flex; align-items: center; gap: 6px;
@@ -243,6 +256,8 @@ button:focus { outline: none; }
   color: var(--tx-2); font-size: 14px; font-weight: 500; font-family: var(--font);
   padding: 5px 7px; border-radius: 8px;
   transition: background 140ms ease, color 140ms ease;
+  min-width: 0;
+  white-space: nowrap;
 }
 .act .ic { display: inline-flex; color: var(--ic); }
 .act:hover { color: #fff; background: rgba(255,255,255,0.06); }
@@ -467,9 +482,20 @@ button:focus { outline: none; }
   position: fixed; inset: 0; z-index: 20;
   display: grid; place-items: center;
   background: rgba(0,0,0,0.35); backdrop-filter: blur(4px);
+  padding: 12px;
+  overflow: hidden;
 }
 #settings-scrim.hidden { display: none; }
-#settings { width: min(480px, 94vw); padding: 18px 20px 20px; -webkit-app-region: no-drag; max-height: 88vh; display: flex; flex-direction: column; }
+#settings {
+  width: min(560px, 100%);
+  height: min(720px, 100%);
+  min-height: 0;
+  padding: 18px 20px 20px;
+  -webkit-app-region: no-drag;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 .s-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; flex-shrink: 0; }
 .s-title { font-size: 17px; font-weight: 600; color: var(--tx-1); }
 .s-close { border: none; background: var(--accent); color: #fff; font-weight: 600; font-size: 13px; padding: 6px 14px; border-radius: var(--r-pill); cursor: pointer; }
@@ -486,20 +512,20 @@ button:focus { outline: none; }
 .s-tab.on { border-color: rgba(60,131,245,0.5); color: #7FB0F9; background: rgba(60,131,245,0.12); }
 
 /* Tab panes */
-.s-tab-pane { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; flex: 1; min-height: 0; }
+.s-tab-pane { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; overflow-x: hidden; flex: 1; min-height: 0; padding-right: 4px; scrollbar-width: thin; }
 .s-tab-pane.hidden { display: none; }
 
 .s-body { display: flex; flex-direction: column; gap: 8px; }
 .s-label { color: var(--tx-2); font-size: 13px; font-weight: 600; margin-top: 6px; flex-shrink: 0; }
 .s-hint { color: var(--tx-mut); font-weight: 400; font-size: 11px; margin-left: 6px; }
-.s-seg { display: flex; gap: 6px; }
+.s-seg { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .s-seg-wrap { flex-wrap: wrap; }
 .s-seg-wrap button { min-width: 76px; }
-.s-seg button { flex: 1; padding: 8px; border-radius: var(--r-8); border: 1px solid rgba(255,255,255,0.14); background: rgba(255,255,255,0.04); color: var(--tx-2); font-size: 13px; font-weight: 500; cursor: pointer; transition: all 140ms ease; }
+.s-seg button { flex: 1 1 78px; min-width: 0; padding: 8px; border-radius: var(--r-8); border: 1px solid rgba(255,255,255,0.14); background: rgba(255,255,255,0.04); color: var(--tx-2); font-size: 13px; font-weight: 500; cursor: pointer; transition: all 140ms ease; }
 .s-seg button.on { border-color: var(--accent); color: #fff; background: rgba(60,131,245,0.16); }
-.s-field { display: flex; align-items: center; gap: 10px; }
+.s-field { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .s-field span { width: 78px; color: var(--tx-mut); font-size: 12px; flex-shrink: 0; }
-.s-field input { flex: 1; padding: 8px 10px; border-radius: var(--r-8); border: 1px solid rgba(255,255,255,0.14); background: rgba(0,0,0,0.25); color: var(--tx-1); font-size: 13px; font-family: var(--font); outline: none; }
+.s-field input { flex: 1; min-width: 0; padding: 8px 10px; border-radius: var(--r-8); border: 1px solid rgba(255,255,255,0.14); background: rgba(0,0,0,0.25); color: var(--tx-1); font-size: 13px; font-family: var(--font); outline: none; }
 .s-field input:focus { border-color: var(--accent); }
 .s-help { color: var(--tx-mut); font-size: 11px; line-height: 1.4; margin: 4px 0 2px 88px; }
 .s-select {
@@ -735,13 +761,119 @@ button:focus { outline: none; }
   color: #fca5a5;
 }
 
-/* Sidebar no longer widens panel — it floats outside */
-/* The history sidebar is position:fixed at right:20px and 220px wide. In a 700px
-   window the default 624px panel would sit underneath it, so narrow the panel and
-   shift it left while the sidebar is open. */
+/* Sidebar floats outside the panel. Reserve its width while keeping the main
+   response area fluid, so widening the window remains useful with history open. */
 #panel-wrap.sidebar-open {
-  width: min(420px, 60vw);
-  transform: translateX(-120px);
+  width: calc(100% - 250px);
+  transform: translateX(-125px);
+}
+
+/* Large, visible resize targets for the frameless window. */
+.resize-handle {
+  position: fixed;
+  z-index: 30;
+  user-select: none;
+  touch-action: none;
+}
+.resize-edge { opacity: 0.65; transition: opacity 120ms ease, background 120ms ease; }
+.resize-edge:hover, .resize-edge.active { opacity: 1; background: rgba(56,189,248,0.16); }
+.resize-edge::after {
+  content: "";
+  position: absolute;
+  border-radius: 999px;
+  background: rgba(125,211,252,0.88);
+  box-shadow: 0 0 12px rgba(56,189,248,0.45);
+}
+.resize-edge-right {
+  top: 24%;
+  right: 0;
+  width: 18px;
+  height: 52%;
+  cursor: ew-resize;
+}
+.resize-edge-right::after {
+  top: 50%;
+  right: 4px;
+  width: 4px;
+  height: 72px;
+  transform: translateY(-50%);
+}
+.resize-edge-bottom {
+  left: 24%;
+  bottom: 0;
+  width: 52%;
+  height: 18px;
+  cursor: ns-resize;
+}
+.resize-edge-bottom::after {
+  left: 50%;
+  bottom: 4px;
+  width: 72px;
+  height: 4px;
+  transform: translateX(-50%);
+}
+#resize-grip {
+  right: 7px;
+  bottom: 7px;
+  min-width: 92px;
+  height: 36px;
+  padding: 0 10px 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  cursor: nwse-resize;
+  color: #e0f2fe;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: rgba(8,20,34,0.94);
+  border: 1px solid rgba(125,211,252,0.7);
+  border-radius: 10px;
+  box-shadow: 0 5px 18px rgba(0,0,0,0.45), 0 0 14px rgba(56,189,248,0.2);
+  transition: transform 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+#resize-grip .resize-arrow { color: var(--accent-hi); font-size: 18px; line-height: 1; }
+#resize-grip:hover, #resize-grip.active {
+  transform: translate(-2px, -2px);
+  border-color: var(--accent-hi);
+  box-shadow: 0 7px 22px rgba(0,0,0,0.5), 0 0 20px rgba(56,189,248,0.38);
+}
+
+@media (max-width: 760px) {
+  .shortcut-hint, #action-row .sep { display: none; }
+  .transcript-sidebar {
+    left: auto;
+    right: 12px;
+    top: 66px;
+    bottom: 12px;
+    width: min(360px, calc(100vw - 24px));
+    max-height: none;
+    min-height: 0;
+  }
+  #panel-wrap.sidebar-open { width: 100%; transform: none; }
+}
+
+@media (max-width: 520px) {
+  :root { --r-panel: 18px; }
+  #app { padding: 10px 8px 8px; }
+  #toolbar { gap: 2px; padding: 4px; }
+  .drag-label, .tb-divider { display: none; }
+  .tb-hide { padding-inline: 8px; }
+  #panel-wrap { margin-top: 8px; }
+  #panel { padding: 14px; max-height: calc(100vh - 60px); }
+  #action-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .act { justify-content: center; width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  .act-primary { font-size: 14px; padding-inline: 8px; }
+  #composer { margin-top: 10px; margin-bottom: 14px; padding: 10px 11px; }
+  #placeholder { font-size: 13px; }
+  #settings-scrim { padding: 6px; }
+  #settings { height: 100%; padding: 14px 12px 12px; border-radius: 16px; }
+  .s-tabs { flex-wrap: wrap; overflow-x: hidden; padding-bottom: 3px; }
+  .s-tab { flex: 1 1 calc(33.333% - 4px); min-width: 110px; }
+  .s-hint { display: block; margin: 3px 0 0; }
+  .s-help { margin-left: 0; }
 }
 
 /* ============================ Transcript viewer ============================ */

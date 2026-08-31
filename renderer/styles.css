@@ -301,28 +301,6 @@ button:focus { outline: none; }
   background: var(--accent);
 }
 
-/* FIX #12: Interim text in input area — positioned relative to composer */
-.input-interim {
-  display: none;
-  position: absolute;
-  top: -28px;
-  left: 12px;
-  right: 12px;
-  padding: 4px 8px;
-  font-size: 12px;
-  font-style: italic;
-  color: rgba(255,255,255,0.4);
-  background: rgba(34,197,94,0.08);
-  border-radius: 6px 6px 0 0;
-  border: 1px solid rgba(34,197,94,0.15);
-  border-bottom: none;
-  pointer-events: none;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  z-index: 5;
-}
-
 /* FIX #14: History badge */
 .history-badge {
   position: absolute;
@@ -628,6 +606,8 @@ button:focus { outline: none; }
 #panel-main {
   flex: 1;
   min-width: 0; /* allow shrink */
+  display: flex;
+  flex-direction: column;
 }
 
 /* Transcript history sidebar — floats OUTSIDE the main panel */
@@ -815,6 +795,7 @@ button:focus { outline: none; }
 #resize-grip {
   right: 7px;
   bottom: 7px;
+  width: 92px;
   min-width: 92px;
   height: 36px;
   padding: 0 10px 0 12px;
@@ -832,10 +813,31 @@ button:focus { outline: none; }
   border: 1px solid rgba(125,211,252,0.7);
   border-radius: 10px;
   box-shadow: 0 5px 18px rgba(0,0,0,0.45), 0 0 14px rgba(56,189,248,0.2);
-  transition: transform 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+  overflow: hidden;
+  opacity: 1;
+  transition: width 180ms ease, min-width 180ms ease, padding 180ms ease, gap 180ms ease,
+    opacity 180ms ease, transform 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+#resize-grip .resize-label {
+  max-width: 58px;
+  overflow: hidden;
+  opacity: 1;
+  white-space: nowrap;
+  transition: max-width 160ms ease, opacity 120ms ease;
 }
 #resize-grip .resize-arrow { color: var(--accent-hi); font-size: 18px; line-height: 1; }
+#resize-grip.minimized {
+  width: 36px;
+  min-width: 36px;
+  padding-inline: 0;
+  gap: 0;
+  opacity: 0.68;
+  border-color: rgba(125,211,252,0.4);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.34), 0 0 8px rgba(56,189,248,0.12);
+}
+#resize-grip.minimized .resize-label { max-width: 0; opacity: 0; }
 #resize-grip:hover, #resize-grip.active {
+  opacity: 1;
   transform: translate(-2px, -2px);
   border-color: var(--accent-hi);
   box-shadow: 0 7px 22px rgba(0,0,0,0.5), 0 0 20px rgba(56,189,248,0.38);

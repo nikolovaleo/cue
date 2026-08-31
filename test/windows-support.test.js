@@ -46,7 +46,7 @@ test('frameless window exposes persistent resize support', () => {
   assert.match(html, /id="resize-grip"/);
   assert.match(html, /class="resize-handle resize-edge resize-edge-right"/);
   assert.match(html, /class="resize-handle resize-edge resize-edge-bottom"/);
-  assert.match(html, /<span>Adjust<\/span>/);
+  assert.match(html, /<span class="resize-label">Adjust<\/span>/);
 });
 
 test('responsive layout wraps actions and constrains settings to the viewport', () => {
@@ -60,6 +60,29 @@ test('responsive layout wraps actions and constrains settings to the viewport', 
   assert.match(css, /#settings\s*\{[^}]*height:\s*min\(720px,\s*100%\)/s);
   assert.match(css, /@media\s*\(max-width:\s*520px\)/);
   assert.match(css, /\.transcript-sidebar\s*\{[^}]*width:\s*min\(360px,\s*calc\(100vw\s*-\s*24px\)\)/s);
+});
+
+test('Adjust grip minimizes after ten seconds and expands on hover', () => {
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
+  const css = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'styles.css'), 'utf8');
+
+  assert.match(renderer, /ADJUST_MINIMIZE_DELAY_MS\s*=\s*10000/);
+  assert.match(renderer, /resizeGrip\.addEventListener\(['"]pointerenter['"],\s*expandAdjustGrip\)/);
+  assert.match(renderer, /resizeGrip\.classList\.add\(['"]minimized['"]\)/);
+  assert.match(renderer, /resizeGrip\.classList\.remove\(['"]minimized['"]\)/);
+  assert.match(css, /#resize-grip\.minimized\s*\{[^}]*width:\s*36px[^}]*min-width:\s*36px/s);
+  assert.match(css, /#resize-grip\.minimized\s+\.resize-label\s*\{[^}]*max-width:\s*0/s);
+});
+
+test('hidden history keeps one interim row and only finalized speech enters the composer', () => {
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
+  const css = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'styles.css'), 'utf8');
+
+  assert.match(renderer, /cue\.on\(['"]stt:interim['"][\s\S]*getOrCreateInterimEl\(\)/);
+  assert.match(renderer, /cue\.on\(['"]transcript['"][\s\S]*autoFillInputFromSTT\(text\)/);
+  assert.doesNotMatch(renderer, /input-interim|showInterimInInput/);
+  assert.doesNotMatch(css, /\.input-interim/);
+  assert.match(css, /#panel-main\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column/s);
 });
 
 test('toolbar close button forwards quit from renderer to the main process', () => {

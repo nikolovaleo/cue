@@ -435,7 +435,6 @@
     clearTimeout(softClearTimer);
     clearTimeout(questionFinalizeTimer);
     clearTimeout(sttFillTimer);
-    clearInputInterim(); // FIX #5: Clear interim when clearing input
     syncPlaceholder();
     updateSendButtonState(); // FIX #9
     updateHistoryBadge(); // FIX #14
@@ -466,9 +465,6 @@
   
   input.addEventListener('input', () => {
     const currentValue = input.value;
-    
-    // FIX #5: Clear interim text when user starts typing
-    clearInputInterim();
     
     // FIX #6: Only detach from STT mode if edit is substantial
     // Minor corrections (typo fixes, small additions) should keep STT mode
@@ -1027,25 +1023,6 @@
     }
     return interimEl;
   }
-  // FIX #12: Show interim text in input box (grayed/italic) before final arrives
-  let inputInterimEl = null;
-  function showInterimInInput(text) {
-    if (!inputInterimEl) {
-      inputInterimEl = document.createElement('span');
-      inputInterimEl.className = 'input-interim';
-      // FIX #2: Insert into composer (not input-area) for correct positioning
-      composer.appendChild(inputInterimEl);
-    }
-    inputInterimEl.textContent = text;
-    inputInterimEl.style.display = text ? 'block' : 'none';
-  }
-  function clearInputInterim() {
-    if (inputInterimEl) {
-      inputInterimEl.textContent = '';
-      inputInterimEl.style.display = 'none';
-    }
-  }
-  
   cue.on('stt:interim', ({ channel, text }) => {
     setLiveDotState('transcribing');
     const el = getOrCreateInterimEl();
@@ -1053,18 +1030,12 @@
     el.textContent = `${label}: ${text}`;
     el.classList.add('show');
     appendTranscriptHistoryTurn(channel, text, true); // update sidebar interim
-    
-    // FIX #12: Show interviewer's interim speech in input area
-    if (channel === 'them' && !input.value.trim()) {
-      showInterimInInput(text);
-    }
   });
   cue.on('stt:final', ({ channel, text }) => {
     setLiveDotState('idle');
     // Clear interim when we get a final
     if (interimEl) { interimEl.textContent = ''; interimEl.classList.remove('show'); }
     clearTranscriptInterim();
-    clearInputInterim(); // FIX #12: Clear interim text from input area
     // sidebar: the final turn is added via the 'transcript' event below
   });
   cue.on('stt:status', ({ channel, status, provider }) => {
@@ -1772,12 +1743,35 @@
   // Frameless transparent windows have a tiny native resize border. Provide
   // large edge handles plus a labelled corner grip so resizing is discoverable.
   const resizeHandles = [...document.querySelectorAll('.resize-handle')];
+  const resizeGrip = $('#resize-grip');
+  const ADJUST_MINIMIZE_DELAY_MS = 10000;
   let resizeStart = null;
+  let adjustMinimizeTimer = null;
+
+  function expandAdjustGrip() {
+    clearTimeout(adjustMinimizeTimer);
+    adjustMinimizeTimer = null;
+    resizeGrip.classList.remove('minimized');
+  }
+
+  function scheduleAdjustMinimize() {
+    clearTimeout(adjustMinimizeTimer);
+    adjustMinimizeTimer = setTimeout(() => {
+      const gripIsActive = resizeStart && resizeStart.handle === resizeGrip;
+      if (!gripIsActive && !resizeGrip.matches(':hover')) resizeGrip.classList.add('minimized');
+    }, ADJUST_MINIMIZE_DELAY_MS);
+  }
+
+  resizeGrip.addEventListener('pointerenter', expandAdjustGrip);
+  resizeGrip.addEventListener('pointerleave', scheduleAdjustMinimize);
+  scheduleAdjustMinimize();
+
   resizeHandles.forEach((handle) => {
     handle.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return;
       event.preventDefault();
       setIgnore(false);
+      if (handle === resizeGrip) expandAdjustGrip();
       resizeStart = {
         handle,
         mode: handle.dataset.resize,
@@ -1806,6 +1800,7 @@
     resizeStart = null;
     activeHandle.classList.remove('active');
     if (activeHandle.hasPointerCapture(event.pointerId)) activeHandle.releasePointerCapture(event.pointerId);
+    if (activeHandle === resizeGrip) scheduleAdjustMinimize();
   };
   resizeHandles.forEach((handle) => {
     handle.addEventListener('pointerup', finishResize);

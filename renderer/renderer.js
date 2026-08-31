@@ -29,6 +29,7 @@
   let caretEl = null;
   let responseCount = 0;
   const MAX_RESPONSES = 20;
+  const responseGroups = new Map();
 
   const messages = $('#messages');
 
@@ -147,7 +148,13 @@
 
   // ---- actions -----------------------------------------------------------
   function runMode(mode, text) {
-    if (busy) return;
+    if (busy) {
+      if (mode === 'say' || mode === 'answerThis' || mode === 'assist') {
+        cue.ask({ mode, text: text || '' });
+        showToast('Switching to the newest question…', 1800);
+      }
+      return;
+    }
     setBusy(true);
     cue.ask({ mode, text: text || '' });
   }
@@ -167,6 +174,7 @@
   let questionFinalizeTimer = null;
   let softClearTimer = null;
   let userSpeechStart = null;
+  let candidateTurnSinceQuestion = false;
 
   // Question history for undo (Ctrl+Z)
   const questionHistory = [];
@@ -328,8 +336,19 @@
     clearTimeout(softClearTimer);
     composer.classList.remove('stt-dimmed');
 
+    // A substantive candidate turn closes the previous question. The next
+    // interviewer speech starts a new block instead of being appended to the
+    // entire interview history in the composer.
+    if (candidateTurnSinceQuestion && inputFromSTT && input.value.trim()) {
+      saveToQuestionHistory(input.value);
+      input.value = '';
+      lastSTTValue = '';
+    }
+    candidateTurnSinceQuestion = false;
+
     const current = input.value.trim();
-    const newText = current ? current + ' ' + text : text;
+    const combined = current ? current + ' ' + text : text;
+    const newText = combined.length > 900 ? combined.slice(-900).replace(/^\S*\s+/, '') : combined;
     input.value = newText;
     inputFromSTT = true;
     lastSTTValue = newText; // FIX #6: Track the STT value for edit detection
@@ -393,6 +412,7 @@
         saveToQuestionHistory(input.value);
         input.value = '';
         inputFromSTT = false;
+        candidateTurnSinceQuestion = false;
         composer.classList.remove('stt-filling', 'stt-dimmed', 'stt-ready', 'stt-accumulating');
         syncPlaceholder();
         updateSendButtonState(); // FIX #9: Update send button state
@@ -408,13 +428,13 @@
     saveToQuestionHistory(input.value);
     input.value = '';
     inputFromSTT = false;
+    candidateTurnSinceQuestion = false;
     lastSTTValue = ''; // FIX #6: Clear the tracked STT value
     userSpeechStart = null;
     composer.classList.remove('stt-filling', 'stt-dimmed', 'stt-ready', 'stt-accumulating');
     clearTimeout(softClearTimer);
     clearTimeout(questionFinalizeTimer);
     clearTimeout(sttFillTimer);
-    clearInputInterim(); // FIX #5: Clear interim when clearing input
     syncPlaceholder();
     updateSendButtonState(); // FIX #9
     updateHistoryBadge(); // FIX #14
@@ -445,9 +465,6 @@
   
   input.addEventListener('input', () => {
     const currentValue = input.value;
-    
-    // FIX #5: Clear interim text when user starts typing
-    clearInputInterim();
     
     // FIX #6: Only detach from STT mode if edit is substantial
     // Minor corrections (typo fixes, small additions) should keep STT mode
@@ -488,6 +505,7 @@
     
     input.value = '';
     inputFromSTT = false;
+    candidateTurnSinceQuestion = false;
     lastSTTValue = ''; // FIX #6: Clear tracked STT value
     userSpeechStart = null;
     composer.classList.remove('stt-filling', 'stt-dimmed', 'stt-ready', 'stt-accumulating');
@@ -1005,25 +1023,6 @@
     }
     return interimEl;
   }
-  // FIX #12: Show interim text in input box (grayed/italic) before final arrives
-  let inputInterimEl = null;
-  function showInterimInInput(text) {
-    if (!inputInterimEl) {
-      inputInterimEl = document.createElement('span');
-      inputInterimEl.className = 'input-interim';
-      // FIX #2: Insert into composer (not input-area) for correct positioning
-      composer.appendChild(inputInterimEl);
-    }
-    inputInterimEl.textContent = text;
-    inputInterimEl.style.display = text ? 'block' : 'none';
-  }
-  function clearInputInterim() {
-    if (inputInterimEl) {
-      inputInterimEl.textContent = '';
-      inputInterimEl.style.display = 'none';
-    }
-  }
-  
   cue.on('stt:interim', ({ channel, text }) => {
     setLiveDotState('transcribing');
     const el = getOrCreateInterimEl();
@@ -1031,18 +1030,12 @@
     el.textContent = `${label}: ${text}`;
     el.classList.add('show');
     appendTranscriptHistoryTurn(channel, text, true); // update sidebar interim
-    
-    // FIX #12: Show interviewer's interim speech in input area
-    if (channel === 'them' && !input.value.trim()) {
-      showInterimInInput(text);
-    }
   });
   cue.on('stt:final', ({ channel, text }) => {
     setLiveDotState('idle');
     // Clear interim when we get a final
     if (interimEl) { interimEl.textContent = ''; interimEl.classList.remove('show'); }
     clearTranscriptInterim();
-    clearInputInterim(); // FIX #12: Clear interim text from input area
     // sidebar: the final turn is added via the 'transcript' event below
   });
   cue.on('stt:status', ({ channel, status, provider }) => {
@@ -1078,15 +1071,22 @@
   cue.on('vad:state', ({ channel, speaking }) => {
     setLiveDotState(speaking ? 'speaking' : 'idle');
   });
-  cue.on('llm:start', ({ userBubble, small, category }) => {
+  cue.on('llm:start', ({ responseId, userBubble, small, category, questionFrame }) => {
     responseCount++;
     if (responseCount > MAX_RESPONSES) {
       const oldest = messages.querySelector('.response-group');
-      if (oldest) oldest.remove();
+      if (oldest) {
+        if (oldest.dataset.responseId) responseGroups.delete(oldest.dataset.responseId);
+        oldest.remove();
+      }
       responseCount = MAX_RESPONSES;
     }
     const group = document.createElement('div');
-    group.className = 'response-group';
+    group.className = 'response-group' + (questionFrame ? ' rescue-card' : '');
+    if (responseId) {
+      group.dataset.responseId = responseId;
+      responseGroups.set(responseId, group);
+    }
     const sep = document.createElement('div');
     sep.className = 'response-sep';
     sep.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -1103,6 +1103,15 @@
       pill.textContent = category.charAt(0).toUpperCase() + category.slice(1);
       group.appendChild(pill);
     }
+    if (questionFrame && questionFrame.exactQuestion) {
+      const target = document.createElement('div');
+      target.className = 'question-target';
+      const confidence = questionFrame.confidence && questionFrame.confidence !== 'high'
+        ? ` · ${questionFrame.confidence} confidence`
+        : '';
+      target.textContent = `Answering: ${questionFrame.exactQuestion}${confidence}`;
+      group.appendChild(target);
+    }
     aiEl = document.createElement('div');
     aiEl.className = 'ai-text' + (small ? ' small' : '');
     aiEl.dataset.raw = '';
@@ -1110,6 +1119,33 @@
     caretEl.className = 'ai-caret';
     aiEl.appendChild(caretEl);
     group.appendChild(aiEl);
+    if (responseId && questionFrame && category !== 'paused' && category !== 'listen') {
+      const meta = document.createElement('div');
+      meta.className = 'answer-meta';
+      const verification = document.createElement('span');
+      verification.className = 'verification-chip pending';
+      verification.textContent = 'Checking answer…';
+      const latency = document.createElement('span');
+      latency.className = 'latency-chip';
+      latency.textContent = 'Timing…';
+      const feedback = document.createElement('div');
+      feedback.className = 'answer-feedback';
+      feedback.innerHTML = '<span>Useful?</span>';
+      [['Yes', true], ['No', false]].forEach(([label, useful]) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = label;
+        button.addEventListener('click', () => {
+          cue.submitAnswerFeedback(responseId, useful);
+          feedback.querySelectorAll('button').forEach((item) => { item.disabled = true; });
+          feedback.classList.add(useful ? 'useful' : 'not-useful');
+          showToast('Feedback saved locally', 1400);
+        });
+        feedback.appendChild(button);
+      });
+      meta.append(verification, latency, feedback);
+      group.appendChild(meta);
+    }
     messages.appendChild(group);
     // Use requestAnimationFrame so the DOM is fully updated before scrolling
     requestAnimationFrame(() => {
@@ -1123,6 +1159,69 @@
     if (!aiEl) startAi(true);
     aiEl.dataset.raw = message; finalizeAi(); setBusy(false);
   });
+  cue.on('llm:queued', () => {
+    if (aiEl) {
+      aiEl.dataset.raw += '\n\n_Stopped: a newer question arrived._';
+      finalizeAi();
+    }
+    setBusy(true);
+  });
+  cue.on('llm:stage', ({ stage, responseId }) => {
+    const labels = {
+      understanding: 'Reconstructing the exact question…',
+      verifying: 'Checking technical accuracy…',
+    };
+    showToast(labels[stage] || 'Working…', 1800);
+    const group = responseId ? responseGroups.get(responseId) : null;
+    const chip = group && group.querySelector('.verification-chip');
+    if (chip && stage === 'verifying') chip.textContent = 'Verifying…';
+  });
+  cue.on('llm:replace', ({ responseId, text }) => {
+    const group = responseGroups.get(responseId);
+    const target = group && group.querySelector('.ai-text');
+    if (!target || !text) return;
+    target.dataset.raw = text;
+    target.innerHTML = renderMarkdown(text);
+    if (target === aiEl) caretEl = null;
+    group.classList.add('answer-corrected');
+  });
+  cue.on('llm:verified', ({ responseId, verification, skipped }) => {
+    const group = responseGroups.get(responseId);
+    const chip = group && group.querySelector('.verification-chip');
+    if (!chip) return;
+    chip.classList.remove('pending');
+    if (!verification) {
+      chip.classList.add('unverified');
+      chip.textContent = skipped ? 'Fast answer · not independently verified' : 'Verification unavailable';
+      return;
+    }
+    const average = Math.round((verification.relevance + verification.factuality + verification.speakability) / 3);
+    chip.classList.add(verification.ok ? 'verified' : 'corrected');
+    chip.textContent = verification.ok ? `Verified ${average}%` : `Corrected ${average}%`;
+    chip.title = `Relevance ${verification.relevance}% · Factuality ${verification.factuality}% · Speakability ${verification.speakability}%`;
+  });
+  cue.on('llm:metrics', (metric) => {
+    const group = metric && responseGroups.get(metric.responseId);
+    const chip = group && group.querySelector('.latency-chip');
+    if (!chip) return;
+    const first = metric.firstTokenMs == null ? '—' : `${(metric.firstTokenMs / 1000).toFixed(1)}s`;
+    chip.textContent = `First words ${first} · total ${(metric.totalMs / 1000).toFixed(1)}s`;
+    chip.title = `Understanding ${metric.semanticMs}ms · generation ${metric.generationMs || 0}ms · verification ${metric.verifierMs}ms`;
+  });
+  cue.on('llm:needs-confirmation', ({ question }) => {
+    const reconstructed = (question || '').trim();
+    if (reconstructed) {
+      input.value = reconstructed;
+      inputFromSTT = true;
+      lastSTTValue = reconstructed;
+      composer.classList.add('stt-filling', 'stt-ready');
+      syncPlaceholder();
+      updateQuestionReadyState();
+    }
+    showToast('Transcript unclear · review it, then press Enter', 3500);
+    setBusy(false);
+    input.focus();
+  });
   cue.on('transcript', ({ channel, text }) => {
     if (!text || text.trim().length < 2 || /^[?!.,;:\-…]+$/.test(text.trim())) return;
     appendTranscriptHistoryTurn(channel, text, false);
@@ -1132,6 +1231,8 @@
       autoFillInputFromSTT(text);
     } else {
       // User spoke — soft clear (don't immediately wipe, wait to see if they're really answering)
+      const candidateWords = text.trim().split(/\s+/).filter(Boolean).length;
+      if (candidateWords >= 4 || text.trim().length >= 28) candidateTurnSinceQuestion = true;
       softClearSTTFill();
     }
   });
@@ -1642,12 +1743,35 @@
   // Frameless transparent windows have a tiny native resize border. Provide
   // large edge handles plus a labelled corner grip so resizing is discoverable.
   const resizeHandles = [...document.querySelectorAll('.resize-handle')];
+  const resizeGrip = $('#resize-grip');
+  const ADJUST_MINIMIZE_DELAY_MS = 10000;
   let resizeStart = null;
+  let adjustMinimizeTimer = null;
+
+  function expandAdjustGrip() {
+    clearTimeout(adjustMinimizeTimer);
+    adjustMinimizeTimer = null;
+    resizeGrip.classList.remove('minimized');
+  }
+
+  function scheduleAdjustMinimize() {
+    clearTimeout(adjustMinimizeTimer);
+    adjustMinimizeTimer = setTimeout(() => {
+      const gripIsActive = resizeStart && resizeStart.handle === resizeGrip;
+      if (!gripIsActive && !resizeGrip.matches(':hover')) resizeGrip.classList.add('minimized');
+    }, ADJUST_MINIMIZE_DELAY_MS);
+  }
+
+  resizeGrip.addEventListener('pointerenter', expandAdjustGrip);
+  resizeGrip.addEventListener('pointerleave', scheduleAdjustMinimize);
+  scheduleAdjustMinimize();
+
   resizeHandles.forEach((handle) => {
     handle.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return;
       event.preventDefault();
       setIgnore(false);
+      if (handle === resizeGrip) expandAdjustGrip();
       resizeStart = {
         handle,
         mode: handle.dataset.resize,
@@ -1676,6 +1800,7 @@
     resizeStart = null;
     activeHandle.classList.remove('active');
     if (activeHandle.hasPointerCapture(event.pointerId)) activeHandle.releasePointerCapture(event.pointerId);
+    if (activeHandle === resizeGrip) scheduleAdjustMinimize();
   };
   resizeHandles.forEach((handle) => {
     handle.addEventListener('pointerup', finishResize);

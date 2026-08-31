@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('cue', {
   whisperModelImport: (modelId) => ipcRenderer.invoke('whisper:model-import', modelId),
   platformInfo: () => ipcRenderer.invoke('platform:info'),
   ask: (payload) => ipcRenderer.send('ask', payload),
+  submitAnswerFeedback: (responseId, useful) => ipcRenderer.send('llm:feedback', { responseId, useful: !!useful }),
   captureToggle: () => ipcRenderer.invoke('capture:toggle').catch((err) => {
     console.error('[cue] captureToggle error', err);
     return false;
@@ -34,7 +35,7 @@ contextBridge.exposeInMainWorld('cue', {
   permissionsContinue: () => ipcRenderer.send('permissions:continue'),
   log: (msg) => ipcRenderer.send('log', msg),
   on: (channel, cb) => {
-    const allowed = ['capture:state', 'llm:start', 'llm:token', 'llm:done', 'llm:error', 'status', 'transcript', 'stt:interim', 'stt:final', 'stt:status', 'vad:state', 'applink:consent-request', 'hide:toggle', 'whisper:download-progress', 'whisper:models-changed'];
+    const allowed = ['capture:state', 'llm:start', 'llm:token', 'llm:done', 'llm:error', 'llm:queued', 'llm:needs-confirmation', 'llm:stage', 'llm:replace', 'llm:verified', 'llm:metrics', 'status', 'transcript', 'stt:interim', 'stt:final', 'stt:status', 'vad:state', 'applink:consent-request', 'hide:toggle', 'whisper:download-progress', 'whisper:models-changed'];
     if (!allowed.includes(channel)) return;
     ipcRenderer.on(channel, (_e, data) => cb(data));
   }

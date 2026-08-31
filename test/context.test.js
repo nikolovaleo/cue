@@ -10,10 +10,17 @@ const turns = [
 ];
 
 test('buildContext assembles a normalized context', () => {
-  const ctx = buildContext({ transcript: turns, userText: 'ok', settings: { context: 'I work at Acme' } });
+  const questionFrame = { exactQuestion: 'question?' };
+  const interviewMemory = [{ id: 'turn-1', value: 'I work at Acme' }];
+  const ctx = buildContext({
+    transcript: turns, userText: 'ok', settings: { context: 'I work at Acme' },
+    questionFrame, interviewMemory, mode: 'say',
+  });
   assert.strictEqual(ctx.profile, 'I work at Acme');
   assert.strictEqual(ctx.userText, 'ok');
   assert.strictEqual(ctx.recent.length, 3);
+  assert.strictEqual(ctx.questionFrame, questionFrame);
+  assert.strictEqual(ctx.interviewMemory, interviewMemory);
 });
 
 test('getRecent returns newest N turns oldest-first', () => {

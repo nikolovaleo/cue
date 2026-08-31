@@ -45,16 +45,26 @@ const BASE_RULES =
   'Treat the live interview as the most current source of truth, ahead of saved profile fields. ' +
   'Never invent an employer, project, tool, metric, salary, responsibility, or result. ';
 
+const LIVE_ANSWER_DEPTH =
+  '\n\nDepth and length:\n' +
+  '• Do not default to a short summary. Give the candidate enough substance to answer confidently without needing an immediate follow-up expansion.\n' +
+  '• For substantive interview questions, aim for 100–180 words, roughly 45–90 seconds spoken.\n' +
+  '• Behavioral, experience, and situational answers may use 120–200 words when needed for a complete story or decision process.\n' +
+  '• Technical answers should explain what it is, how or why it works, one concrete example, and an important trade-off or limitation.\n' +
+  '• Motivation and general interview answers should develop 2–3 specific supporting points instead of stopping after the headline.\n' +
+  '• Only truly simple logistical or compensation questions should be shorter, and even those should be 2–4 useful sentences.\n' +
+  '• Do not pad, repeat yourself, or invent facts; every sentence must add useful detail.';
+
 const RESCUE_CARD_RULES =
   'Produce a live rescue card that is easy to scan while speaking.\n' +
   'Write the candidate-facing wording in first person so it can be said out loud without rewriting.\n' +
   'Use exactly this shape:\n' +
-  '**Say now:** one short first sentence the candidate can start immediately; put it first so streaming reveals it before anything else.\n' +
-  '**Anchors:** 2–3 very short bullets with the essential ideas.\n' +
+  '**Say now:** a complete spoken answer, beginning with one strong sentence the candidate can start immediately so streaming is useful from the first line.\n' +
+  '**Anchors:** 3–5 short bullets containing the essential points from the full answer as glanceable reminders.\n' +
   'Add **Bridge:** only for time_to_think or clarification intent. It must buy a few seconds without evading the question.\n' +
   'Add **If challenged:** one corrective sentence only when challengeToPriorAnswer is yes.\n' +
-  'For technical questions, lead with the fundamental distinction, then the trade-off or use case. Do not merely echo the candidate\'s prior claim when it is wrong.\n' +
-  'Keep technical and situational cards under 70 words total. Behavioral cards may use up to 110 words. No preamble or generic self-promotion.';
+  'For technical questions, explain the fundamental distinction, how or why it works, one concrete example, and the trade-off or limitation. Do not merely echo the candidate\'s prior claim when it is wrong.\n' +
+  'No preamble or generic self-promotion.' + LIVE_ANSWER_DEPTH;
 
 const MODES = {
 
@@ -158,9 +168,9 @@ const MODES = {
       return applyRules(buildSystem(
         'You are cue, a real-time copilot with access to the candidate\'s screen and live interview. ' +
         BASE_RULES +
-        'Answer the question directly and concisely. ' +
+        'Answer the question directly and thoroughly, matching depth to complexity. ' +
         'When the question is about the candidate\'s background, use their actual experience. ' +
-        'When the question is conceptual, explain clearly with examples. No preamble.',
+        'When the question is conceptual, explain clearly with examples and relevant trade-offs. For substantive questions, provide enough detail for a complete answer rather than a brief summary. No preamble.',
         contextBlock
       ), aiRules, 'ask');
     },

@@ -15,7 +15,28 @@ test('say mode produces a spoken answer not a question', () => {
   const text = system + '\n' + MODES.say.build({ transcript: [], userText: '' });
   assert.match(text, /say out loud|in first person/i);
   // Must instruct to write actual spoken words (not meta-instructions)
-  assert.match(text, /actual words|Write the|2.5 sentences/i);
+  assert.match(text, /actual words|Write the/i);
+  assert.match(text, /100.180 words/i);
+  assert.match(text, /45.90 seconds spoken/i);
+  assert.doesNotMatch(text, /2.5 sentences/i);
+});
+
+test('live interview modes request complete adaptive-depth answers', () => {
+  for (const name of ['assist', 'say', 'answerThis']) {
+    const system = MODES[name].buildSystem(null);
+    assert.match(system, /Do not default to a short summary/i, `${name} should reject artificially short answers`);
+    assert.match(system, /100.180 words/i, `${name} should request a complete spoken answer`);
+    assert.match(system, /120.200 words/i, `${name} should allow full STAR and situational answers`);
+    assert.match(system, /example.*trade-off|trade-off.*example/is, `${name} should require technical depth`);
+    assert.doesNotMatch(system, /2.5 sentences/i, `${name} must not hard-cap answers at five sentences`);
+  }
+});
+
+test('typed conceptual questions request thorough explanations', () => {
+  const system = MODES.ask.buildSystem(null);
+  assert.match(system, /directly and thoroughly/i);
+  assert.match(system, /examples and relevant trade-offs/i);
+  assert.doesNotMatch(system, /directly and concisely/i);
 });
 
 test('leetcode mode ignores context block and returns coding prompt', () => {

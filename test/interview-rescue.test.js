@@ -112,7 +112,9 @@ test('say prompt is a grounded rescue card, not a generic paragraph', () => {
   assert.match(prompt, /never invent an employer, project, tool, metric, salary/i);
   assert.match(prompt, /That is not the fundamental difference/i);
   assert.match(prompt, /They both use nearest neighbors/i);
-  assert.match(prompt, /under 70 words/i);
+  assert.match(prompt, /100.180 words/i);
+  assert.match(prompt, /45.90 seconds spoken/i);
+  assert.doesNotMatch(prompt, /under 70 words/i);
 });
 
 test('answerThis treats a reviewed low-punctuation question as confirmed', () => {

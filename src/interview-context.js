@@ -79,35 +79,17 @@ const CATEGORY_PATTERNS = {
     /when (would you use|should you use|to use)/i,
     /pros and cons/i, /advantages (of|and disadvantages)/i,
     /implement (a|an|the)/i, /how (is|are|do|does|would)/i,
-    /can you (talk|explain|describe) (about|how|the)/i,
-    /are you familiar with/i, /tell me the difference/i,
-    /ways? to (optimize|improve|reduce|scale)/i,
-    /embedding/i, /rerank/i, /context window/i, /langchain/i, /langgraph/i,
   ],
 };
 
-function categoryText(input) {
-  if (typeof input === 'string') return input;
-  if (input && typeof input.exactQuestion === 'string') return input.exactQuestion;
-  if (!Array.isArray(input)) return '';
-  // Compatibility fallback for callers that have not built a QuestionFrame.
-  // Use only the latest interviewer block; older questions must not override
-  // the question that the candidate is trying to answer now.
-  const parts = [];
-  for (let i = input.length - 1; i >= 0; i -= 1) {
-    const turn = input[i];
-    if (!turn || turn.channel !== 'them') {
-      if (parts.length) break;
-      continue;
-    }
-    parts.unshift(turn.text);
-    if (parts.length >= 8) break;
-  }
-  return parts.join(' ');
-}
-
-function detectCategory(input) {
-  const recentThem = categoryText(input);
+function detectCategory(transcript) {
+  if (!transcript || !transcript.length) return 'general';
+  // Look at the last 5 "Them" turns — the interviewer's recent questions
+  const recentThem = transcript
+    .filter(t => t.channel === 'them')
+    .slice(-5)
+    .map(t => t.text)
+    .join(' ');
   if (!recentThem) return 'general';
 
   for (const [category, patterns] of Object.entries(CATEGORY_PATTERNS)) {
@@ -183,11 +165,11 @@ function buildJDBlock(jd, limit = 600) {
  * Returns a system-prompt string with only the context fields relevant to
  * the detected interview category. Returns null for leetcode mode.
  */
-function buildInterviewContext(settings, mode, transcript, questionFrame = null) {
+function buildInterviewContext(settings, mode, transcript) {
   // Coding problems never need personal context
   if (mode === 'leetcode') return null;
 
-  const category = detectCategory(questionFrame || transcript || []);
+  const category = detectCategory(transcript || []);
 
   const resume    = settings.resumeText || '';
   const jd        = settings.jobDescription || '';
@@ -230,8 +212,8 @@ function buildInterviewContext(settings, mode, transcript, questionFrame = null)
         );
       } else {
         blocks.push(
-          '(No verified STAR stories were provided. Do not invent an event, metric, employer, tool, or result. ' +
-          'Give a short answer framework with clearly marked details for the candidate to supply.)'
+          '(No STAR stories provided — construct a plausible story from the candidate\'s experience above. ' +
+          'Be specific and grounded, avoid generic statements.)'
         );
       }
       if (workStyle) blocks.push('Work Style / Values:\n' + clip(workStyle, 400));
@@ -267,14 +249,6 @@ function buildInterviewContext(settings, mode, transcript, questionFrame = null)
       if (hasStories) blocks.push('Key Experience Highlights:\n' + clip(stories, 600));
       if (workStyle)  blocks.push('Work Style:\n' + clip(workStyle, 300));
       break;
-  }
-
-  if (questionFrame && questionFrame.liveFacts && questionFrame.liveFacts.salary) {
-    blocks.push(
-      '=== Verified Live Interview Fact ===\n' +
-      'The candidate most recently stated: ' + clip(questionFrame.liveFacts.salary, 300) + '\n' +
-      'This live fact overrides any conflicting saved profile value.'
-    );
   }
 
   if (!blocks.length) return null;

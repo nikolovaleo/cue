@@ -207,13 +207,7 @@
 
   // ---- actions -----------------------------------------------------------
   function runMode(mode, text) {
-    if (busy) {
-      if (mode === 'say' || mode === 'answerThis' || mode === 'assist') {
-        cue.ask({ mode, text: text || '' });
-        showToast('Switching to the newest question…', 1800);
-      }
-      return;
-    }
+    if (busy) return;
     setBusy(true);
     cue.ask({ mode, text: text || '' });
   }
@@ -233,69 +227,19 @@
   let questionFinalizeTimer = null;
   let softClearTimer = null;
   let userSpeechStart = null;
-  let candidateTurnSinceQuestion = false;
 
   // Question history for undo (Ctrl+Z)
   const questionHistory = [];
   const MAX_QUESTION_HISTORY = 10;
 
-  // ---- Question completeness detection ----
-  function isLikelyCompleteQuestion(text) {
-    const trimmed = (text || '').trim();
-    
-    // Must be substantial (not just filler words)
-    if (trimmed.length < 12) return false;
-    
-    // High confidence: ends with question mark
-    if (/\?$/.test(trimmed)) return true;
-    
-    // High confidence: behavioral interview patterns (these are complete even without ?)
-    const behavioralPatterns = [
-      /tell me about a time/i,
-      /give me an example/i,
-      /describe a (situation|time|project|challenge)/i,
-      /walk me through/i,
-      /can you (tell|describe|explain|share)/i,
-      /what (was|were|is|are) your/i,
-      /how (did|do|would) you/i,
-      /why (did|do|are|should)/i,
-      /what (did|do|would) you/i,
-      /tell me about yourself/i,
-      /tell me about your/i,
-      /what.{1,30}(biggest|greatest|most|hardest|proudest)/i,
-      /have you ever/i
-    ];
-    if (behavioralPatterns.some(p => p.test(trimmed))) return true;
-    
-    // Medium confidence: question starters with substantial content
-    const questionStarters = /^(what|how|why|when|where|who|which|tell|describe|explain|can|could|would|should|have|did|do|is|are|was|were)/i;
-    if (questionStarters.test(trimmed) && trimmed.length > 25) return true;
-    
-    // Medium confidence: ends with common question endings
-    if (/(about that|for us|to us|with you|for you|about it|to share|you handle|you approach|your experience|your background)\s*$/i.test(trimmed)) return true;
-    
-    return false;
-  }
-
-  // ---- Get question confidence level ----
-  function getQuestionConfidence(text) {
-    const trimmed = (text || '').trim();
-    if (trimmed.length < 8) return 'low';
-    if (/\?$/.test(trimmed)) return 'high';
-    if (isLikelyCompleteQuestion(trimmed)) return 'medium';
-    if (trimmed.length > 20) return 'accumulating';
-    return 'low';
-  }
-
-  // ---- Update visual state based on question readiness ----
-  // FIX #8: Batch class updates to avoid flicker
+  // Text is ready whenever it is nonempty; no question classification.
   function updateQuestionReadyState() {
     const text = input.value;
-    const confidence = getQuestionConfidence(text);
+
     
     // Batch the class changes to minimize repaints
-    const shouldBeReady = confidence === 'high' || confidence === 'medium';
-    const shouldBeAccumulating = confidence === 'accumulating';
+    const shouldBeReady = !!text.trim();
+    const shouldBeAccumulating = false;
     
     // Only update if state actually changed
     const isReady = composer.classList.contains('stt-ready');
@@ -395,19 +339,8 @@
     clearTimeout(softClearTimer);
     composer.classList.remove('stt-dimmed');
 
-    // A substantive candidate turn closes the previous question. The next
-    // interviewer speech starts a new block instead of being appended to the
-    // entire interview history in the composer.
-    if (candidateTurnSinceQuestion && inputFromSTT && input.value.trim()) {
-      saveToQuestionHistory(input.value);
-      input.value = '';
-      lastSTTValue = '';
-    }
-    candidateTurnSinceQuestion = false;
-
     const current = input.value.trim();
-    const combined = current ? current + ' ' + text : text;
-    const newText = combined.length > 900 ? combined.slice(-900).replace(/^\S*\s+/, '') : combined;
+    const newText = current ? current + ' ' + text : text;
     input.value = newText;
     inputFromSTT = true;
     lastSTTValue = newText; // FIX #6: Track the STT value for edit detection
@@ -421,7 +354,7 @@
     // Reset the idle timer — after 2s of silence, check if question is complete
     clearTimeout(questionFinalizeTimer);
     questionFinalizeTimer = setTimeout(() => {
-      if (isLikelyCompleteQuestion(input.value)) {
+      if (input.value.trim()) {
         composer.classList.add('stt-ready');
         updateSendButtonState(); // FIX #9: Update send button when ready
         // Subtle notification that question is ready
@@ -471,7 +404,6 @@
         saveToQuestionHistory(input.value);
         input.value = '';
         inputFromSTT = false;
-        candidateTurnSinceQuestion = false;
         composer.classList.remove('stt-filling', 'stt-dimmed', 'stt-ready', 'stt-accumulating');
         syncPlaceholder();
         updateSendButtonState(); // FIX #9: Update send button state
@@ -487,7 +419,6 @@
     saveToQuestionHistory(input.value);
     input.value = '';
     inputFromSTT = false;
-    candidateTurnSinceQuestion = false;
     lastSTTValue = ''; // FIX #6: Clear the tracked STT value
     userSpeechStart = null;
     composer.classList.remove('stt-filling', 'stt-dimmed', 'stt-ready', 'stt-accumulating');
@@ -564,7 +495,6 @@
     
     input.value = '';
     inputFromSTT = false;
-    candidateTurnSinceQuestion = false;
     lastSTTValue = ''; // FIX #6: Clear tracked STT value
     userSpeechStart = null;
     composer.classList.remove('stt-filling', 'stt-dimmed', 'stt-ready', 'stt-accumulating');
@@ -1130,7 +1060,7 @@
   cue.on('vad:state', ({ channel, speaking }) => {
     setLiveDotState(speaking ? 'speaking' : 'idle');
   });
-  cue.on('llm:start', ({ responseId, userBubble, small, category, questionFrame }) => {
+  cue.on('llm:start', ({ responseId, userBubble, small, category, questionText }) => {
     for (const previous of messages.querySelectorAll(':scope > .response-group')) {
       const archived = document.createElement('details');
       archived.className = 'past-answer';
@@ -1150,7 +1080,7 @@
       responseCount = MAX_RESPONSES;
     }
     const group = document.createElement('div');
-    group.className = 'response-group' + (questionFrame ? ' rescue-card' : '');
+    group.className = 'response-group' + (questionText ? ' rescue-card' : '');
     if (category === 'paused' || category === 'listen') group.dataset.noRecovery = 'true';
     if (recoveryOriginal && /^(Simplify this answer|Give me an example)$/.test(userBubble || '')) {
       const original = recoveryOriginal;
@@ -1188,13 +1118,10 @@
       pill.textContent = category.charAt(0).toUpperCase() + category.slice(1);
       group.appendChild(pill);
     }
-    if (questionFrame && questionFrame.exactQuestion) {
+    if (questionText) {
       const target = document.createElement('div');
       target.className = 'question-target';
-      const confidence = questionFrame.confidence && questionFrame.confidence !== 'high'
-        ? ` · ${questionFrame.confidence} confidence`
-        : '';
-      target.textContent = `Answering: ${questionFrame.exactQuestion}${confidence}`;
+      target.textContent = questionText;
       group.appendChild(target);
     }
     aiEl = document.createElement('div');
@@ -1204,33 +1131,6 @@
     caretEl.className = 'ai-caret';
     aiEl.appendChild(caretEl);
     group.appendChild(aiEl);
-    if (responseId && questionFrame && category !== 'paused' && category !== 'listen') {
-      const meta = document.createElement('div');
-      meta.className = 'answer-meta';
-      const verification = document.createElement('span');
-      verification.className = 'verification-chip pending';
-      verification.textContent = 'Checking answer…';
-      const latency = document.createElement('span');
-      latency.className = 'latency-chip';
-      latency.textContent = 'Timing…';
-      const feedback = document.createElement('div');
-      feedback.className = 'answer-feedback';
-      feedback.innerHTML = '<span>Useful?</span>';
-      [['Yes', true], ['No', false]].forEach(([label, useful]) => {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.textContent = label;
-        button.addEventListener('click', () => {
-          cue.submitAnswerFeedback(responseId, useful);
-          feedback.querySelectorAll('button').forEach((item) => { item.disabled = true; });
-          feedback.classList.add(useful ? 'useful' : 'not-useful');
-          showToast('Feedback saved locally', 1400);
-        });
-        feedback.appendChild(button);
-      });
-      meta.append(verification, latency, feedback);
-      group.appendChild(meta);
-    }
     messages.appendChild(group);
     // Use requestAnimationFrame so the DOM is fully updated before scrolling
     requestAnimationFrame(() => {
@@ -1247,70 +1147,6 @@
     delete aiEl._reading;
     aiEl.dataset.raw = message; finalizeAi(); setBusy(false);
   });
-  cue.on('llm:queued', () => {
-    if (aiEl) {
-      aiEl.dataset.raw += '\n\n_Stopped: a newer question arrived._';
-      finalizeAi();
-    }
-    setBusy(true);
-  });
-  cue.on('llm:stage', ({ stage, responseId }) => {
-    const labels = {
-      understanding: 'Reconstructing the exact question…',
-      verifying: 'Checking technical accuracy…',
-    };
-    showToast(labels[stage] || 'Working…', 1800);
-    const group = responseId ? responseGroups.get(responseId) : null;
-    const chip = group && group.querySelector('.verification-chip');
-    if (chip && stage === 'verifying') chip.textContent = 'Verifying…';
-  });
-  cue.on('llm:replace', ({ responseId, text }) => {
-    const group = responseGroups.get(responseId);
-    const target = group && group.querySelector('.ai-text');
-    if (!target || !text) return;
-    target.dataset.raw = text;
-    delete target._reading;
-    updateReadingStream(target, true);
-    if (target === aiEl) caretEl = null;
-    group.classList.add('answer-corrected');
-  });
-  cue.on('llm:verified', ({ responseId, verification, skipped }) => {
-    const group = responseGroups.get(responseId);
-    const chip = group && group.querySelector('.verification-chip');
-    if (!chip) return;
-    chip.classList.remove('pending');
-    if (!verification) {
-      chip.classList.add('unverified');
-      chip.textContent = skipped ? 'Fast answer · not independently verified' : 'Verification unavailable';
-      return;
-    }
-    const average = Math.round((verification.relevance + verification.factuality + verification.speakability) / 3);
-    chip.classList.add(verification.ok ? 'verified' : 'corrected');
-    chip.textContent = verification.ok ? `Verified ${average}%` : `Corrected ${average}%`;
-    chip.title = `Relevance ${verification.relevance}% · Factuality ${verification.factuality}% · Speakability ${verification.speakability}%`;
-  });
-  cue.on('llm:metrics', (metric) => {
-    const group = metric && responseGroups.get(metric.responseId);
-    const chip = group && group.querySelector('.latency-chip');
-    if (!chip) return;
-    const first = metric.firstTokenMs == null ? '—' : `${(metric.firstTokenMs / 1000).toFixed(1)}s`;
-    chip.textContent = `First words ${first} · total ${(metric.totalMs / 1000).toFixed(1)}s`;
-    chip.title = `Understanding ${metric.semanticMs}ms · generation ${metric.generationMs || 0}ms · verification ${metric.verifierMs}ms`;
-  });
-  cue.on('llm:needs-confirmation', ({ question }) => {
-    const reconstructed = (question || '').trim();
-    if (reconstructed) {
-      input.value = reconstructed;
-      inputFromSTT = true;
-      lastSTTValue = reconstructed;
-      composer.classList.add('stt-filling', 'stt-ready');
-      syncPlaceholder();
-      updateQuestionReadyState();
-    }
-    showToast('Transcript unclear · review it, then press Enter', 3500);
-    setBusy(false);
-    input.focus();
-  });
   cue.on('transcript', ({ channel, text }) => {
     if (!text || text.trim().length < 2 || /^[?!.,;:\-…]+$/.test(text.trim())) return;
     appendTranscriptHistoryTurn(channel, text, false);
@@ -1320,8 +1156,6 @@
       autoFillInputFromSTT(text);
     } else {
       // User spoke — soft clear (don't immediately wipe, wait to see if they're really answering)
-      const candidateWords = text.trim().split(/\s+/).filter(Boolean).length;
-      if (candidateWords >= 4 || text.trim().length >= 28) candidateTurnSinceQuestion = true;
       softClearSTTFill();
     }
   });

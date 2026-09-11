@@ -5,20 +5,17 @@
 const { MODES } = require('./prompts');
 
 // Build the normalized context object. Pure, so it is unit-testable.
-// state = { transcript, userText, settings, memory, interviewMemory,
-//           questionFrame, mode }
+// state = { transcript: [{channel, text, ts}], userText, settings, memory }
 function buildContext(state) {
   const { transcript = [], userText = '', settings = {} } = state;
-  const rt = getRecent(transcript, windowFor(state.mode));
+  const rt = getRecent(transcript, 12);
   return {
     transcript,
     recent: rt,
     userText,
     profile: settings.context || '',
     smart: !!settings.smart,
-    memory: state.memory || [],
-    interviewMemory: state.interviewMemory || [],
-    questionFrame: state.questionFrame || null,
+    memory: state.memory || []
   };
 }
 
@@ -38,13 +35,7 @@ function buildSystem(def, ctx) {
 
 // Build the user turn for a mode. Reuses MODES[].build but passes normalized context.
 function buildUserTurn(def, ctx) {
-  return def.build({
-    transcript: ctx.recent,
-    userText: ctx.userText,
-    memory: ctx.memory,
-    interviewMemory: ctx.interviewMemory,
-    questionFrame: ctx.questionFrame,
-  });
+  return def.build({ transcript: ctx.recent, userText: ctx.userText, memory: ctx.memory });
 }
 
 // How much of the conversation to include per mode (turns).

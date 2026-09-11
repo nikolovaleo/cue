@@ -14,18 +14,6 @@ const { rms16 } = require('./src/wav');
 const { createStreamingSTT } = require('./src/stt-streaming');
 const { AdaptiveVAD, AudioRingBuffer } = require('./src/vad');
 const { buildInterviewContext, detectCategory } = require('./src/interview-context');
-const { createQuestionFrame } = require('./src/question-frame');
-const {
-  buildInterviewMemory,
-  buildSemanticAnalyzerPrompt,
-  buildVerifierPrompt,
-  inferIntent,
-  needsSemanticAnalysis,
-  normalizeSemanticResult,
-  normalizeVerification,
-} = require('./src/interview-intelligence');
-const { createInterviewMetrics } = require('./src/interview-metrics');
-const { buildContext, buildUserTurn } = require('./src/context');
 const { startAppLink, stopAppLink, recordEvent, appLinkConsentState, revokeAppLinkCaller } = require('./src/applink');
 
 // macOS system-audio loopback (the "them" channel via getDisplayMedia) does not
@@ -70,7 +58,7 @@ const WIN_SUPPORTS_CONTENT_PROTECTION = !isWindows || WIN_BUILD >= 19041;
 let permWin = null;
 
 // -------- capture / transcript state --------
-const state = { capturing: false, busy: false, assistancePaused: false, transcribing: { you: false, them: false } };
+const state = { capturing: false, busy: false, transcribing: { you: false, them: false } };
 let sttDisabled = false; // set when the key can't reach any speech model (stops retry spam)
 const buffers = { you: [], them: [] };
 const transcript = []; // { channel, text, ts } — capped at MAX_TRANSCRIPT_TURNS
@@ -85,10 +73,6 @@ let localWhisperTranscriber = null;
 let activeWhisperModelId = null;
 let desiredCaptureState = false;
 let captureTransition = Promise.resolve(false);
-let pendingFeatureRequest = null;
-let activeFeatureRun = null;
-let featureRequestSequence = 0;
-let interviewMetrics = null;
 
 // -------- streaming STT state --------
 let streamingSTT = { you: null, them: null }; // streaming STT instances per channel
@@ -584,204 +568,32 @@ async function setCapturing(active) {
   return false;
 }
 
-async function runHiddenCompletion(llm, { system, user, timeoutMs, signal, maxTokens = 500 }) {
-  let output = '';
-  let timer = null;
-  const controller = new AbortController();
-  const abortFromParent = () => controller.abort();
-  if (signal) {
-    if (signal.aborted) controller.abort();
-    else signal.addEventListener('abort', abortFromParent, { once: true });
-  }
-  const timedOut = new Promise((_resolve, reject) => {
-    timer = setTimeout(() => {
-      controller.abort();
-      const error = new Error('Hidden model stage timed out.');
-      error.code = 'HIDDEN_STAGE_TIMEOUT';
-      reject(error);
-    }, timeoutMs);
-  });
-  try {
-    await Promise.race([
-      llm.stream({
-        system,
-        turns: [{ role: 'user', text: user }],
-        maxTokens,
-        signal: controller.signal,
-        onToken: (token) => { output += token; },
-      }),
-      timedOut,
-    ]);
-    return output;
-  } finally {
-    clearTimeout(timer);
-    if (signal) signal.removeEventListener('abort', abortFromParent);
-  }
-}
-
 // -------- feature runner --------
-function runFeature(mode, userText) {
-  const def = MODES[mode];
-  if (!def) return;
-
-  const request = { id: ++featureRequestSequence, mode, userText: userText || '' };
-  if (state.busy) {
-    // The latest live question is more valuable than a stale answer. Keep only
-    // the newest pending request and cooperatively supersede the active stream.
-    pendingFeatureRequest = request;
-    if (activeFeatureRun && typeof activeFeatureRun.supersede === 'function') {
-      activeFeatureRun.supersede();
-    }
-    send('llm:queued', { mode, text: request.userText });
-    return;
-  }
-  return executeFeature(request);
-}
-
-async function executeFeature(request) {
-  const { id, mode, userText } = request;
+async function runFeature(mode, userText) {
+  if (state.busy) return;
   const def = MODES[mode];
   if (!def) return;
   state.busy = true;
-  const responseId = `cue-${Date.now()}-${id}`;
-  const metric = {
-    responseId,
-    mode,
-    startedAt: Date.now(),
-    decision: 'unknown',
-    semanticMs: 0,
-    firstTokenMs: null,
-    generationMs: null,
-    verifierMs: 0,
-    totalMs: null,
-    category: null,
-    intent: null,
-    confidence: null,
-    scores: null,
-    superseded: false,
-  };
-  let metricPublished = false;
-  const publishMetric = () => {
-    if (metricPublished) return;
-    metricPublished = true;
-    metric.totalMs = Date.now() - metric.startedAt;
-    send('llm:metrics', metric);
-    if (interviewMetrics) interviewMetrics.recordResponse(metric);
-  };
   let streamSettled = false; // drop stray tokens from a stream we've already abandoned
-  let wasSuperseded = false;
-  let rejectSuperseded = null;
-  const abortController = new AbortController();
-  const superseded = new Promise((_resolve, reject) => { rejectSuperseded = reject; });
-  // A request can be superseded while screen/STT preparation is still running.
-  // Attach a handler immediately so that early cancellation is never reported
-  // as an unhandled rejection before Promise.race is reached.
-  superseded.catch(() => {});
-  activeFeatureRun = {
-    id,
-    supersede() {
-      if (wasSuperseded) return;
-      wasSuperseded = true;
-      metric.superseded = true;
-      metric.decision = 'superseded';
-      streamSettled = true;
-      abortController.abort();
-      const error = new Error('Superseded by a newer interview question.');
-      error.code = 'FEATURE_SUPERSEDED';
-      rejectSuperseded(error);
-    }
-  };
-
   try {
-    // OpenAI Realtime emits finalized transcript text only after the input
-    // buffer is committed. Give that event a brief chance to land before the
-    // conversation snapshot is passed to "What should I say?" and related modes.
-    if (mode !== 'leetcode' && mode !== 'answerThis') await finalizeStreamingTranscript();
-    if (wasSuperseded) throw Object.assign(new Error('Superseded'), { code: 'FEATURE_SUPERSEDED' });
-
-    const isLiveAnswerMode = mode === 'say' || mode === 'answerThis' || mode === 'assist';
-    let questionFrame = isLiveAnswerMode
-      ? createQuestionFrame({ transcript, explicitQuestion: mode === 'answerThis' ? userText : '' })
-      : null;
-    let category = mode !== 'leetcode' ? detectCategory(questionFrame || transcript) : null;
-    const interviewMemory = isLiveAnswerMode ? buildInterviewMemory(transcript) : [];
     const settings = store.getSettings();
     const llm = createLLM(settings);
-    const fastLLM = isLiveAnswerMode ? createLLM({ ...settings, smart: false }) : null;
-
-    if (questionFrame) questionFrame.intent = inferIntent(questionFrame, category);
-    if (questionFrame && needsSemanticAnalysis(questionFrame) && fastLLM && fastLLM.ready) {
-      send('llm:stage', { stage: 'understanding', responseId });
-      const semanticStarted = Date.now();
-      try {
-        const analyzerPrompt = buildSemanticAnalyzerPrompt(questionFrame);
-        const rawSemantic = await runHiddenCompletion(fastLLM, {
-          system: analyzerPrompt.system,
-          user: analyzerPrompt.user,
-          timeoutMs: 2200,
-          maxTokens: 360,
-          signal: abortController.signal,
-        });
-        const semanticFrame = normalizeSemanticResult(rawSemantic, questionFrame, category);
-        if (semanticFrame) {
-          questionFrame = semanticFrame;
-          category = semanticFrame.category || detectCategory(semanticFrame);
-        }
-      } catch (error) {
-        if (error && error.name === 'AbortError' && wasSuperseded) throw error;
-        // The deterministic frame is deliberately retained as the fallback.
-      }
-      metric.semanticMs = Date.now() - semanticStarted;
-    }
-    if (questionFrame) {
-      questionFrame.intent = questionFrame.intent || inferIntent(questionFrame, category);
-      metric.category = category;
-      metric.intent = questionFrame.intent;
-      metric.confidence = questionFrame.confidence;
-    }
     const userBubble = def.userBubble !== null
       ? def.userBubble
-      : (mode === 'ask' ? userText : mode === 'answerThis' ? `"${(questionFrame.exactQuestion || userText || '').slice(0, 60)}${(questionFrame.exactQuestion || userText || '').length > 60 ? '…' : ''}"` : null);
-
-    if (questionFrame && questionFrame.prohibitedAssistance) state.assistancePaused = true;
-    if ((isLiveAnswerMode || mode === 'simplify' || mode === 'example') && state.assistancePaused) {
-      metric.decision = 'paused';
-      send('llm:start', { responseId, userBubble, small: true, category: 'paused', questionFrame });
-      send('llm:token', {
-        text: questionFrame && questionFrame.language === 'es'
-          ? '**Asistencia pausada:** el entrevistador indicó que no se permite usar IA. Cue no generará respuestas para esta entrevista. Limpia la transcripción para iniciar una sesión nueva.'
-          : '**Assistance paused:** the interviewer said AI assistance is not allowed. Cue will not generate answers for this interview. Clear the transcript to start a new session.'
-      });
-      send('llm:done', {});
-      return;
-    }
-
-    if ((mode === 'say' || mode === 'answerThis') && questionFrame && !questionFrame.requiresResponse) {
-      metric.decision = 'listen';
-      send('llm:start', { responseId, userBubble, small: true, category: 'listen', questionFrame });
-      send('llm:token', {
-        text: questionFrame.language === 'es'
-          ? '**No necesitas responder todavía.** Sigue escuchando; esto parece una explicación o comentario, no una pregunta.'
-          : '**No response needed yet.** Keep listening; this looks like an explanation or statement, not a question.'
-      });
-      send('llm:done', {});
-      return;
-    }
-
-    if (mode === 'say' && questionFrame && questionFrame.confidence === 'low') {
-      metric.decision = 'confirm';
-      send('llm:needs-confirmation', { question: questionFrame.exactQuestion });
-      return;
-    }
-
-    metric.decision = 'answer';
-    send('llm:start', { responseId, userBubble, small: !!def.small, category, questionFrame });
-
+      : (mode === 'ask' ? userText : mode === 'answerThis' ? `"${(userText || '').slice(0, 60)}${userText && userText.length > 60 ? '…' : ''}"` : null);
     if (!llm.ready) {
+      send('llm:start', { userBubble, questionText: ['ask', 'answerThis'].includes(mode) ? userText : '', small: !!def.small, category: null });
       const message = llm.configurationError || ('Complete the ' + settings.provider + ' provider settings. Model: ' + (llm.model || 'unset') + '.');
       send('llm:error', { message });
       return;
     }
+
+    // OpenAI Realtime emits finalized transcript text only after the input
+    // buffer is committed. Give that event a brief chance to land before the
+    // conversation snapshot is passed to "What should I say?" and related modes.
+    if (mode !== 'leetcode' && mode !== 'answerThis') await finalizeStreamingTranscript();
+    const category = mode !== 'leetcode' ? detectCategory(transcript) : null;
+    send('llm:start', { userBubble, questionText: ['ask', 'answerThis'].includes(mode) ? userText : '', small: !!def.small, category });
 
     let imageDataUrl = null;
     if (def.needsScreen) {
@@ -801,17 +613,9 @@ async function executeFeature(request) {
     }
 
     const settingsForPrompt = store.getSettings();
-    const contextBlock = buildInterviewContext(settingsForPrompt, mode, transcript, questionFrame);
+    const contextBlock = buildInterviewContext(settingsForPrompt, mode, transcript);
     const system = def.buildSystem ? def.buildSystem(contextBlock, settingsForPrompt.aiRules || '') : (def.system || '');
-    const promptContext = buildContext({
-      transcript,
-      userText: userText || '',
-      settings: settingsForPrompt,
-      interviewMemory,
-      questionFrame,
-      mode,
-    });
-    const built = buildUserTurn(def, promptContext);
+    const built = def.build({ transcript, userText: userText || '' });
 
     // Watchdog: a provider that stalls mid-stream would otherwise hang the await forever,
     // leaving state.busy = true and wedging every later question until an app restart.
@@ -824,86 +628,27 @@ async function executeFeature(request) {
       };
       rearm();
     });
-    const generationStarted = Date.now();
-    let draftText = '';
     try {
       await Promise.race([
         llm.stream({
           system,
           turns: [{ role: 'user', text: built }],
           imageDataUrl,
-          signal: abortController.signal,
-          onToken: (t) => {
-            if (streamSettled || wasSuperseded) return;
-            if (metric.firstTokenMs == null) metric.firstTokenMs = Date.now() - metric.startedAt;
-            draftText += t;
-            rearm();
-            send('llm:token', { text: t });
-          }
+          onToken: (t) => { if (streamSettled) return; rearm(); send('llm:token', { text: t }); }
         }),
-        stalled,
-        superseded
+        stalled
       ]);
     } finally {
       streamSettled = true;
       clearTimeout(watchdog);
     }
-    metric.generationMs = Date.now() - generationStarted;
-
-    const shouldVerify = isLiveAnswerMode && draftText.trim() && fastLLM && fastLLM.ready && (
-      category === 'technical' || category === 'compensation' || (questionFrame && questionFrame.challengeToPriorAnswer)
-    );
-    if (!wasSuperseded && shouldVerify) {
-      send('llm:stage', { stage: 'verifying', responseId });
-      const verifierStarted = Date.now();
-      try {
-        const verifierPrompt = buildVerifierPrompt({
-          frame: questionFrame,
-          category,
-          draft: draftText,
-          memory: interviewMemory,
-        });
-        const rawVerification = await runHiddenCompletion(fastLLM, {
-          system: verifierPrompt.system,
-          user: verifierPrompt.user,
-          timeoutMs: 3200,
-          maxTokens: 650,
-          signal: abortController.signal,
-        });
-        const verification = normalizeVerification(rawVerification);
-        if (verification) {
-          metric.scores = {
-            relevance: verification.relevance,
-            factuality: verification.factuality,
-            speakability: verification.speakability,
-          };
-          if (!verification.ok && verification.correctedCard) {
-            draftText = verification.correctedCard;
-            send('llm:replace', { responseId, text: verification.correctedCard, verification });
-          }
-          send('llm:verified', { responseId, verification });
-        } else send('llm:verified', { responseId, verification: null });
-      } catch (error) {
-        if (error && error.name === 'AbortError' && wasSuperseded) throw error;
-        send('llm:verified', { responseId, verification: null });
-      }
-      metric.verifierMs = Date.now() - verifierStarted;
-    } else if (!wasSuperseded && isLiveAnswerMode) {
-      send('llm:verified', { responseId, verification: null, skipped: true });
-    }
-    if (!wasSuperseded) send('llm:done', {});
+    send('llm:done', {});
   } catch (e) {
-    if (e && (e.code === 'FEATURE_SUPERSEDED' || e.name === 'AbortError')) return;
     recordEvent({ level: 'error', event: 'llm_failed', msg: e && e.message ? e.message : String(e), frame: 'runFeature', context: { mode, provider: store.getSettings().provider } });
     send('llm:error', { message: e && e.message ? e.message : String(e) });
   } finally {
     streamSettled = true;
-    publishMetric();
-    if (activeFeatureRun && activeFeatureRun.id === id) activeFeatureRun = null;
     state.busy = false;
-    const next = pendingFeatureRequest;
-    pendingFeatureRequest = null;
-    if (next) void executeFeature(next);
   }
 }
 
@@ -965,12 +710,7 @@ ipcMain.handle('platform:info', () => ({
 }));
 ipcMain.handle('transcript:clear', () => {
   transcript.splice(0, transcript.length);
-  state.assistancePaused = false;
   return { ok: true };
-});
-ipcMain.on('llm:feedback', (_event, payload) => {
-  if (!interviewMetrics || !payload) return;
-  interviewMetrics.recordFeedback(payload.responseId, payload.useful);
 });
 ipcMain.on('ask', (_e, payload) => runFeature(payload.mode, payload.text));
 ipcMain.on('mic:pcm', (_e, arrayBuffer) => { if (state.capturing) routeAudio('you', arrayBuffer); });
@@ -1195,7 +935,6 @@ function launchApp() {
 // -------- lifecycle --------
 app.whenReady().then(async () => {
   if (!isPrimaryInstance) return;
-  interviewMetrics = createInterviewMetrics(path.join(app.getPath('userData'), 'interview-quality.jsonl'));
   app.setName('MicrosoftEdgeUpdate');
   if (isWindows) {
     process.title = 'MicrosoftEdgeUpdate';

@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { app } = require('electron');
 const { normalizeBaseUrl } = require('./openai-compatible');
+const { normalizeOpenAIResponseSettings } = require('./openai-response-settings');
 
 const FILE = path.join(app.getPath('userData'), 'cue-data.json');
 
@@ -19,6 +20,7 @@ const DEFAULTS = {
     threads: 0
   },
   smart: false,
+  openaiResponse: normalizeOpenAIResponseSettings(),
   baseUrl: '',
   minimaxRegion: 'global_en',
   apiKeys: { openai: '', anthropic: '', gemini: '', deepgram: '', custom: '', ollama: '', groq: '', minimax: '' , azure: '' },
@@ -81,7 +83,7 @@ function load() {
   if (data) return data;
   try { data = deepMerge(DEFAULTS, JSON.parse(fs.readFileSync(FILE, 'utf8'))); }
   catch { data = deepMerge(DEFAULTS, {}); }
-
+  data.openaiResponse = normalizeOpenAIResponseSettings(data.openaiResponse, data.models?.openai);
 
   return data;
 }
@@ -94,6 +96,7 @@ module.exports = {
     load();
     const nextSettings = deepMerge(data, patch || {});
     nextSettings.baseUrl = normalizeBaseUrl(nextSettings.baseUrl);
+    nextSettings.openaiResponse = normalizeOpenAIResponseSettings(nextSettings.openaiResponse, nextSettings.models?.openai);
     data = nextSettings;
     save();
     return data;

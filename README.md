@@ -125,6 +125,15 @@ cue uses **your own** API key, so it's free to run (you only pay your AI provide
 
 To use an OpenAI-compatible endpoint, select **Custom** and configure its Base URL, API key, and Fast/Smart model IDs. Custom endpoints handle LLM requests only; listening continues to use Deepgram, OpenAI, or Gemini credentials.
 
+For **OpenAI**, Settings → Keys also exposes **OpenAI response controls**, separately for Fast (Smart off) and Smart (Smart on):
+
+- **Reasoning:** Model default omits `reasoning_effort`. You can explicitly choose None, Minimal, Low, Medium, High, Extra high, or Maximum. Supported levels vary by model; a rejected selection shows an error directing you back to these settings. See the [OpenAI parameter reference](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
+- **Streaming:** On shows text as it arrives; Off waits for the complete response. Existing settings default to streaming on and model-default reasoning.
+
+The model fields accept your model IDs. These options apply to OpenAI response requests, including screen questions, and are saved independently for each mode.
+For GPT-4o, GPT-4.1, and older GPT families, reasoning controls are disabled and Cue omits `reasoning_effort` entirely—even if None or another effort was previously saved. Streaming remains configurable.
+For GPT-5.6 Luna, the dropdown offers None, Low, Medium, High, and Extra high plus Model default. Previously saved Minimal settings migrate to Low, and Maximum to Extra high.
+
 | Example | Base URL | Model |
 |---|---|---|
 | OpenClaw local gateway | `http://127.0.0.1:18789/v1` | `openclaw/default` |

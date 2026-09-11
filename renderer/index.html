@@ -34,6 +34,13 @@
 
           <!-- Left column: AI responses -->
           <div id="panel-main">
+            <div id="reading-tools" aria-label="Reading controls">
+              <button id="focus-toggle" aria-pressed="true">Focus</button>
+              <button id="answer-history-toggle" aria-expanded="false">Earlier answers</button>
+              <span class="spacer"></span>
+              <button id="font-smaller" aria-label="Decrease answer text size">A−</button>
+              <button id="font-larger" aria-label="Increase answer text size">A+</button>
+            </div>
             <div id="messages"></div>
 
             <div id="action-row">
@@ -156,6 +163,45 @@
         <label class="s-label">Models <span class="s-hint">fast = Smart off · smart = Smart on</span></label>
         <div class="s-field"><span>Fast</span><input id="model-fast" type="text" autocomplete="off" /></div>
         <div class="s-field"><span>Smart</span><input id="model-smart" type="text" autocomplete="off" /></div>
+
+        <div id="openai-response-settings">
+          <label class="s-label">OpenAI response controls</label>
+          <div class="s-note">Each mode uses its own model and options. Model default leaves reasoning effort to OpenAI. Lower effort can reduce response time; supported levels depend on the model.</div>
+          <label class="s-label" for="openai-reasoning-fast">Fast reasoning <span class="s-hint">Smart off</span></label>
+          <select id="openai-reasoning-fast" class="s-select">
+            <option value="auto">Model default</option>
+            <option value="none">None</option>
+            <option value="minimal">Minimal</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+            <option value="xhigh">Extra high</option>
+            <option value="max">Maximum</option>
+          </select>
+          <div id="openai-reasoning-fast-note" class="s-note hidden">This model has no configurable reasoning. Cue omits the reasoning parameter, including None.</div>
+          <label class="s-label" for="openai-stream-fast">Fast streaming</label>
+          <select id="openai-stream-fast" class="s-select">
+            <option value="true">On — show text as it arrives</option>
+            <option value="false">Off — wait for the complete response</option>
+          </select>
+          <label class="s-label" for="openai-reasoning-smart">Smart reasoning <span class="s-hint">Smart on</span></label>
+          <select id="openai-reasoning-smart" class="s-select">
+            <option value="auto">Model default</option>
+            <option value="none">None</option>
+            <option value="minimal">Minimal</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+            <option value="xhigh">Extra high</option>
+            <option value="max">Maximum</option>
+          </select>
+          <div id="openai-reasoning-smart-note" class="s-note hidden">This model has no configurable reasoning. Cue omits the reasoning parameter, including None.</div>
+          <label class="s-label" for="openai-stream-smart">Smart streaming</label>
+          <select id="openai-stream-smart" class="s-select">
+            <option value="true">On — show text as it arrives</option>
+            <option value="false">Off — wait for the complete response</option>
+          </select>
+        </div>
 
         <label class="s-label">Assistant access <span class="s-hint">programs allowed to see what cue is doing</span></label>
         <div class="s-callers" id="applink-callers"></div>
@@ -312,6 +358,8 @@
   </div>
 
   <script src="icons.js"></script>
+  <script src="reading-stream.js"></script>
+  <script src="../src/openai-response-settings.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

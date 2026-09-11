@@ -32,6 +32,73 @@
   const responseGroups = new Map();
 
   const messages = $('#messages');
+  let recoveryOriginal = null;
+  let fontSize = 20;
+  $('#panel').classList.add('focus-reading');
+  $('#focus-toggle').addEventListener('click', () => {
+    const enabled = $('#panel').classList.toggle('focus-reading');
+    $('#focus-toggle').setAttribute('aria-pressed', String(enabled));
+    if (settings) { settings.focusReading = enabled; cue.settingsSet({ focusReading: enabled }); }
+  });
+  $('#answer-history-toggle').addEventListener('click', () => {
+    const shown = messages.classList.toggle('show-answer-history');
+    $('#answer-history-toggle').setAttribute('aria-expanded', String(shown));
+  });
+  function changeReadingSize(delta) {
+    fontSize = Math.max(16, Math.min(30, fontSize + delta));
+    $('#panel').style.setProperty('--reading-size', `${fontSize}px`);
+    if (settings) { settings.readingFontSize = fontSize; cue.settingsSet({ readingFontSize: fontSize }); }
+  }
+  $('#font-smaller').addEventListener('click', () => changeReadingSize(-2));
+  $('#font-larger').addEventListener('click', () => changeReadingSize(2));
+
+  function readingBlock(text) {
+    const node = document.createElement('div');
+    node.className = 'reading-block';
+    if (/^\*\*More detail:\*\*/i.test(text.trim())) {
+      const detail = document.createElement('details');
+      const summary = document.createElement('summary');
+      summary.textContent = 'More detail';
+      const body = document.createElement('div');
+      body.innerHTML = renderMarkdown(text.replace(/^\s*\*\*More detail:\*\*/i, ''));
+      detail.append(summary, body); node.append(detail);
+    } else node.innerHTML = renderMarkdown(text);
+    return node;
+  }
+
+  function updateReadingStream(target, done = false) {
+    if (!target._reading) {
+      target.replaceChildren();
+      const pending = document.createElement('div');
+      pending.className = 'reading-pending';
+      target.append(pending);
+      target._reading = { committed: 0, pending };
+    }
+    const state = target._reading;
+    const result = window.ReadingStream.splitBlocks(target.dataset.raw || '', done);
+    for (const block of result.blocks.slice(state.committed)) target.insertBefore(readingBlock(block), state.pending);
+    state.committed = result.blocks.length;
+    state.pending.innerHTML = renderMarkdown(result.pending);
+    state.pending.hidden = !result.pending;
+  }
+
+  function addRecoveryActions(target) {
+    const group = target.closest('.response-group');
+    if (!group || group.querySelector('.recovery-actions') || group.dataset.noRecovery === 'true') return;
+    const actions = document.createElement('div');
+    actions.className = 'recovery-actions';
+    for (const [mode, label] of [['simplify', 'Simplify'], ['example', 'Example']]) {
+      const button = document.createElement('button');
+      button.textContent = label;
+      button.addEventListener('click', () => {
+        if (busy) return;
+        recoveryOriginal = group;
+        runMode(mode, (group.querySelector('.question-target')?.textContent || '') + '\n\n' + target.dataset.raw);
+      });
+      actions.append(button);
+    }
+    group.append(actions);
+  }
 
   function esc(s) { return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
@@ -59,7 +126,7 @@
     return html;
   }
 
-  function clearMessages() { messages.innerHTML = ''; aiEl = null; caretEl = null; }
+  function clearMessages() { messages.innerHTML = ''; aiEl = null; caretEl = null; responseGroups.clear(); responseCount = 0; recoveryOriginal = null; }
 
   function addUserBubble(text) {
     const b = document.createElement('div');
@@ -81,21 +148,13 @@
   function appendToken(t) {
     if (!aiEl) startAi(false);
     aiEl.dataset.raw += t;
-    const span = document.createElement('span');
-    span.className = 'w';
-    span.textContent = t;
-    // Guard: caretEl must be a child of aiEl
-    if (caretEl && caretEl.parentNode === aiEl) {
-      aiEl.insertBefore(span, caretEl);
-    } else {
-      aiEl.appendChild(span);
-    }
+    updateReadingStream(aiEl);
   }
 
   function finalizeAi() {
     if (!aiEl) return;
-    const raw = aiEl.dataset.raw || '';
-    aiEl.innerHTML = renderMarkdown(raw);
+    updateReadingStream(aiEl, true);
+    addRecoveryActions(aiEl);
     aiEl = null; caretEl = null;
   }
 
@@ -1072,17 +1131,43 @@
     setLiveDotState(speaking ? 'speaking' : 'idle');
   });
   cue.on('llm:start', ({ responseId, userBubble, small, category, questionFrame }) => {
+    for (const previous of messages.querySelectorAll(':scope > .response-group')) {
+      const archived = document.createElement('details');
+      archived.className = 'past-answer';
+      const summary = document.createElement('summary');
+      summary.textContent = previous.querySelector('.question-target')?.textContent || previous.querySelector('.user-bubble')?.textContent || 'Previous answer';
+      previous.before(archived); archived.append(summary, previous);
+    }
+    messages.querySelectorAll(':scope > .ai-text, :scope > .user-bubble').forEach(node => node.remove());
     responseCount++;
     if (responseCount > MAX_RESPONSES) {
       const oldest = messages.querySelector('.response-group');
       if (oldest) {
         if (oldest.dataset.responseId) responseGroups.delete(oldest.dataset.responseId);
-        oldest.remove();
+        const wrapper = oldest.closest('.past-answer');
+        if (wrapper) wrapper.remove(); else oldest.remove();
       }
       responseCount = MAX_RESPONSES;
     }
     const group = document.createElement('div');
     group.className = 'response-group' + (questionFrame ? ' rescue-card' : '');
+    if (category === 'paused' || category === 'listen') group.dataset.noRecovery = 'true';
+    if (recoveryOriginal && /^(Simplify this answer|Give me an example)$/.test(userBubble || '')) {
+      const original = recoveryOriginal;
+      const originalQuestion = original.querySelector('.question-target');
+      if (originalQuestion) group.append(originalQuestion.cloneNode(true));
+      const back = document.createElement('button');
+      back.className = 'original-answer'; back.textContent = 'Back to original';
+      back.addEventListener('click', () => {
+        messages.classList.add('show-answer-history');
+        $('#answer-history-toggle').setAttribute('aria-expanded', 'true');
+        const archive = original.closest('details');
+        if (archive) archive.open = true;
+        original.scrollIntoView({ block: 'start' });
+      });
+      group.append(back);
+    }
+    recoveryOriginal = null;
     if (responseId) {
       group.dataset.responseId = responseId;
       responseGroups.set(responseId, group);
@@ -1149,7 +1234,7 @@
     messages.appendChild(group);
     // Use requestAnimationFrame so the DOM is fully updated before scrolling
     requestAnimationFrame(() => {
-      if (sep && sep.isConnected) sep.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      if (group.isConnected) group.scrollIntoView({ behavior: 'instant', block: 'start' });
     });
     setBusy(true);
   });
@@ -1157,6 +1242,9 @@
   cue.on('llm:done', () => { finalizeAi(); setBusy(false); });
   cue.on('llm:error', ({ message }) => {
     if (!aiEl) startAi(true);
+    const errorGroup = aiEl.closest('.response-group');
+    if (errorGroup) errorGroup.dataset.noRecovery = 'true';
+    delete aiEl._reading;
     aiEl.dataset.raw = message; finalizeAi(); setBusy(false);
   });
   cue.on('llm:queued', () => {
@@ -1181,7 +1269,8 @@
     const target = group && group.querySelector('.ai-text');
     if (!target || !text) return;
     target.dataset.raw = text;
-    target.innerHTML = renderMarkdown(text);
+    delete target._reading;
+    updateReadingStream(target, true);
     if (target === aiEl) caretEl = null;
     group.classList.add('answer-corrected');
   });
@@ -1374,6 +1463,51 @@
 
   function updateCustomProviderFields() {
     $('#custom-endpoint-settings').classList.toggle('hidden', settings.provider !== 'custom');
+    $('#openai-response-settings').classList.toggle('hidden', settings.provider !== 'openai');
+  }
+
+  function fillOpenAIResponseSettings() {
+    for (const tier of ['fast', 'smart']) {
+      const options = settings.openaiResponse?.[tier];
+      $(`#openai-reasoning-${tier}`).value = options?.reasoningEffort || 'auto';
+      $(`#openai-stream-${tier}`).value = options?.stream === false ? 'false' : 'true';
+    }
+    updateOpenAIReasoningAvailability();
+  }
+
+  function updateOpenAIReasoningAvailability() {
+    for (const tier of ['fast', 'smart']) {
+      const model = $(`#model-${tier}`).value.trim() || 'gpt-4o-mini';
+      const unsupported = window.OpenAIResponseSettings.isNonReasoningModel(model);
+      const select = $(`#openai-reasoning-${tier}`);
+      const supported = window.OpenAIResponseSettings.reasoningEffortsForModel(model);
+      const resolved = window.OpenAIResponseSettings.resolveReasoningEffort(model, select.value);
+      for (const option of select.options) {
+        option.disabled = !supported.includes(option.value);
+        option.hidden = option.disabled;
+      }
+      select.value = resolved;
+      select.disabled = unsupported;
+      $(`#openai-reasoning-${tier}-note`).classList.toggle('hidden', !unsupported);
+    }
+  }
+  for (const tier of ['fast', 'smart']) {
+    $(`#model-${tier}`).addEventListener('input', updateOpenAIReasoningAvailability);
+  }
+
+  function captureModelSettings() {
+    if (!settings.models[settings.provider]) settings.models[settings.provider] = {};
+    settings.models[settings.provider].fast = $('#model-fast').value.trim();
+    settings.models[settings.provider].smart = $('#model-smart').value.trim();
+    if (settings.provider === 'openai') {
+      settings.openaiResponse = {};
+      for (const tier of ['fast', 'smart']) {
+        settings.openaiResponse[tier] = {
+          reasoningEffort: $(`#openai-reasoning-${tier}`).value,
+          stream: $(`#openai-stream-${tier}`).value === 'true'
+        };
+      }
+    }
   }
 
   function fillSettings() {
@@ -1394,6 +1528,7 @@
     $('#azure-endpoint').value = settings.azureEndpoint || '';
     const m = settings.models[settings.provider] || { fast: '', smart: '' };
     $('#model-fast').value = m.fast; $('#model-smart').value = m.smart;
+    fillOpenAIResponseSettings();
     fillAppLinkCallers();
     $('#s-status').textContent = statusText();
     // Transcription tab
@@ -1491,11 +1626,13 @@
   }
 
   document.querySelectorAll('#provider-seg button').forEach((b) => b.addEventListener('click', () => {
+    captureModelSettings();
     settings.provider = b.dataset.provider;
     document.querySelectorAll('#provider-seg button').forEach((x) => x.classList.toggle('on', x === b));
     updateCustomProviderFields();
     const m = settings.models[settings.provider] || { fast: '', smart: '' };
     $('#model-fast').value = m.fast; $('#model-smart').value = m.smart;
+    fillOpenAIResponseSettings();
     $('#s-status').textContent = statusText();
     updateSmartTooltip();
   }));
@@ -1665,9 +1802,7 @@
     settings.apiKeys.minimax = $('#key-minimax').value.trim();
     settings.apiKeys.azure = $('#key-azure').value.trim();
     settings.azureEndpoint = $('#azure-endpoint').value.trim();
-    if (!settings.models[settings.provider]) settings.models[settings.provider] = {};
-    settings.models[settings.provider].fast = $('#model-fast').value.trim();
-    settings.models[settings.provider].smart = $('#model-smart').value.trim();
+    captureModelSettings();
     // Transcription
     if (!settings.localWhisper) settings.localWhisper = {};
     settings.localWhisper.modelId = $('#whisper-model').value || settings.localWhisper.modelId || 'base.en';
@@ -1917,6 +2052,10 @@
   // ---- boot --------------------------------------------------------------
   (async function boot() {
     settings = await cue.settingsGet();
+    $('#panel').classList.toggle('focus-reading', settings.focusReading !== false);
+    $('#focus-toggle').setAttribute('aria-pressed', String(settings.focusReading !== false));
+    fontSize = Math.max(16, Math.min(30, Number(settings.readingFontSize) || 20));
+    $('#panel').style.setProperty('--reading-size', `${fontSize}px`);
     const platformInfo = await cue.platformInfo();
 
     // R4: shortcut hints

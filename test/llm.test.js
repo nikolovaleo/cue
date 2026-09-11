@@ -110,6 +110,116 @@ test('official GPT-5 models use max_completion_tokens and developer instructions
   assert.equal(capturedCompletionRequest.max_completion_tokens, 700);
   assert.equal('max_tokens' in capturedCompletionRequest, false);
   assert.equal(capturedCompletionRequest.messages[0].role, 'developer');
+  assert.equal(capturedCompletionRequest.stream, true);
+  assert.equal('reasoning_effort' in capturedCompletionRequest, false);
+});
+
+function openAIResponseSettings(smart = false) {
+  return {
+    provider: 'openai', smart,
+    apiKeys: { openai: 'test-key' },
+    models: { openai: { fast: 'gpt-5.6-luna', smart: 'gpt-5.6-terra' } },
+    openaiResponse: {
+      fast: { reasoningEffort: 'none', stream: true },
+      smart: { reasoningEffort: 'high', stream: false }
+    }
+  };
+}
+
+test('GPT-4o omits reasoning_effort even when None is saved in either mode', async () => {
+  for (const smart of [false, true]) {
+    for (const model of ['gpt-4o', 'gpt-4o-mini', 'gpt-4o-2024-08-06', 'gpt-4.1', 'ft:gpt-4o-mini-2024-07-18:org:custom:id']) {
+      const settings = openAIResponseSettings(smart);
+      const tier = smart ? 'smart' : 'fast';
+      settings.models.openai[tier] = model;
+      settings.openaiResponse[tier] = { reasoningEffort: 'none', stream: !smart };
+      completionCreateImpl = async request => {
+        assert.equal('reasoning_effort' in request, false, model);
+        return request.stream ? [{ choices: [{ delta: { content: 'ok' } }] }]
+          : { choices: [{ message: { content: 'ok' } }] };
+      };
+      assert.equal(await createLLM(settings).stream({ system: '', turns: [], onToken() {} }), 'ok');
+      assert.equal(capturedCompletionRequest.stream, !smart);
+    }
+  }
+});
+
+test('stale higher effort settings are also omitted for GPT-4o', async () => {
+  const settings = openAIResponseSettings();
+  settings.models.openai.fast = 'gpt-4o';
+  settings.openaiResponse.fast.reasoningEffort = 'high';
+  await createLLM(settings).stream({ system: '', turns: [], onToken() {} });
+  assert.equal('reasoning_effort' in capturedCompletionRequest, false);
+});
+
+test('Luna migrates unsupported saved efforts while preserving supported efforts in both modes', async () => {
+  for (const smart of [false, true]) {
+    for (const [saved, expected] of [['minimal', 'low'], ['max', 'xhigh'], ['none', 'none'], ['low', 'low'], ['medium', 'medium'], ['high', 'high'], ['xhigh', 'xhigh']]) {
+      const settings = openAIResponseSettings(smart);
+      const tier = smart ? 'smart' : 'fast';
+      settings.models.openai[tier] = 'gpt-5.6-luna';
+      settings.openaiResponse[tier] = { reasoningEffort: saved, stream: true };
+      await createLLM(settings).stream({ system: '', turns: [], onToken() {} });
+      assert.equal(capturedCompletionRequest.reasoning_effort, expected);
+    }
+  }
+});
+
+test('Fast OpenAI requests use the selected model and effort while emitting streamed chunks', async () => {
+  const tokens = [];
+  completionCreateImpl = async () => [
+    { choices: [{ delta: { content: 'Hello' } }] },
+    { choices: [{ delta: { content: ' world' } }] }
+  ];
+  const result = await createLLM(openAIResponseSettings()).stream({ system: '', turns: [], onToken: t => tokens.push(t) });
+  assert.equal(capturedCompletionRequest.model, 'gpt-5.6-luna');
+  assert.equal(capturedCompletionRequest.reasoning_effort, 'none');
+  assert.equal(capturedCompletionRequest.stream, true);
+  assert.deepEqual(tokens, ['Hello', ' world']);
+  assert.equal(result, 'Hello world');
+});
+
+test('Smart OpenAI non-streaming responses emit the complete text, preserving screenshot input', async () => {
+  const tokens = [];
+  completionCreateImpl = async () => ({ choices: [{ message: { content: 'Complete answer' } }] });
+  const result = await createLLM(openAIResponseSettings(true)).stream({
+    system: 'Read the screen', turns: [{ role: 'user', text: 'Solve this' }],
+    imageDataUrl: 'data:image/png;base64,abc', onToken: t => tokens.push(t)
+  });
+  assert.equal(capturedCompletionRequest.model, 'gpt-5.6-terra');
+  assert.equal(capturedCompletionRequest.reasoning_effort, 'high');
+  assert.equal(capturedCompletionRequest.stream, false);
+  assert.equal(capturedCompletionRequest.max_completion_tokens, 1400);
+  assert.equal(capturedCompletionRequest.messages[1].content[1].image_url.url, 'data:image/png;base64,abc');
+  assert.deepEqual(tokens, ['Complete answer']);
+  assert.equal(result, 'Complete answer');
+});
+
+test('token-limit compatibility retry preserves explicit OpenAI response options', async () => {
+  completionCreateImpl = async (_request, attempt) => {
+    if (attempt === 1) throw Object.assign(new Error('Unsupported parameter: max_completion_tokens'), { status: 400 });
+    return { choices: [{ message: { content: 'ok' } }] };
+  };
+  await createLLM(openAIResponseSettings(true)).stream({ system: '', turns: [], onToken() {} });
+  assert.equal(capturedCompletionRequests.length, 2);
+  assert.equal(capturedCompletionRequest.reasoning_effort, 'high');
+  assert.equal(capturedCompletionRequest.stream, false);
+  assert.equal(capturedCompletionRequest.max_tokens, 1400);
+});
+
+test('unsupported reasoning effort reports a settings fix without silently retrying at another effort', async () => {
+  completionCreateImpl = async () => {
+    throw Object.assign(new Error('Unsupported value for reasoning_effort'), { status: 400, param: 'reasoning_effort' });
+  };
+  await assert.rejects(createLLM(openAIResponseSettings()).stream({ system: '', turns: [], onToken() {} }), /choose Model default/);
+  assert.equal(capturedCompletionRequests.length, 1);
+});
+
+test('OpenAI options do not change Custom requests', async () => {
+  await createLLM(createCustomSettings({ openaiResponse: openAIResponseSettings().openaiResponse, smart: true }))
+    .stream({ system: '', turns: [], onToken() {} });
+  assert.equal(capturedCompletionRequest.stream, true);
+  assert.equal('reasoning_effort' in capturedCompletionRequest, false);
 });
 
 test('official OpenAI falls back to max_tokens when an older model rejects max_completion_tokens', async () => {

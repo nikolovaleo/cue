@@ -7,6 +7,7 @@
 const { looksLikeHallucination } = require('./stt');
 const { pcmToWav } = require('./wav');
 const { CURRENT_GEMINI_DEFAULT } = require('./llm');
+const { getWebSocketTlsOptions } = require('./websocket-tls');
 
 // ============================================================================
 // OpenAI Realtime Transcription Session (WebSocket)
@@ -45,6 +46,7 @@ class OpenAIRealtimeSTT {
       const url = 'wss://api.openai.com/v1/realtime?intent=transcription';
 
       this.ws = new WebSocket(url, {
+        ...getWebSocketTlsOptions(),
         headers: {
           'Authorization': `Bearer ${this.apiKey}`
         }
@@ -325,6 +327,7 @@ class DeepgramStreamingSTT {
       const url = `wss://api.deepgram.com/v1/listen?${params.toString()}`;
 
       this.ws = new WebSocket(url, {
+        ...getWebSocketTlsOptions(),
         headers: { 'Authorization': `Token ${this.apiKey}` }
       });
 

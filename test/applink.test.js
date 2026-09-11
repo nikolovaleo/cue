@@ -97,7 +97,9 @@ test('asks separately, and differently, for control', () => {
  */
 test('answers Iris over the link', async (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cue-applink-'));
-  const pathOptions = { homedir: home, env: { ...process.env, LOCALAPPDATA: path.join(home, 'Local') } };
+  // Windows pipe names otherwise collide with a running Cue instance even
+  // when the test's settings directory is isolated.
+  const pathOptions = { uid: path.basename(home), homedir: home, env: { ...process.env, LOCALAPPDATA: path.join(home, 'Local') } };
 
   let asked = 0;
   const link = new AppLinkServer({

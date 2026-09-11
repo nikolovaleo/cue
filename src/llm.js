@@ -2,6 +2,7 @@
 // stream({ system, turns:[{role,text}], imageDataUrl, maxTokens, onToken }) -> Promise<fullText>
 
 const { createCompatibleClientOptions } = require('./openai-compatible');
+const { normalizeOpenAIResponseSettings, isNonReasoningModel } = require('./openai-response-settings');
 
 const CUSTOM_PROVIDER = 'custom';
 // gemini-2.0-flash was Google's default here until it was deprecated (Feb 2026)
@@ -74,6 +75,10 @@ function formatProviderErrorMessage(error, provider, model) {
   const label = normalizeProviderName(provider);
   const rawMessage = (error && (error.message || String(error))) || '';
 
+  if (provider === 'openai' && isUnsupportedParameterError(error, 'reasoning_effort')) {
+    return `OpenAI model "${model}" rejected the selected reasoning effort. In Settings → Keys → OpenAI response controls, choose Model default or an effort supported by this model. ${rawMessage}`;
+  }
+
   if (isQuotaError(error)) {
     const retrySeconds = extractRetryDelaySeconds(rawMessage);
     const waitHint = retrySeconds ? ` Wait about ${formatRetryWait(retrySeconds)}` : ' Wait a moment';
@@ -133,7 +138,7 @@ function instructionRole(model, useDeveloperRole) {
   return /^(?:gpt-5(?:[.-]|$)|o\d(?:[.-]|$))/i.test(String(model || '')) ? 'developer' : 'system';
 }
 
-async function streamOpenAI({ apiKey, baseURL, model, system, turns, imageDataUrl, maxTokens, onToken, signal, preferMaxCompletionTokens = false, useDeveloperRole = false }) {
+async function streamOpenAI({ apiKey, baseURL, model, system, turns, imageDataUrl, maxTokens, onToken, signal, preferMaxCompletionTokens = false, useDeveloperRole = false, responseOptions }) {
   const OpenAI = require('openai');
   const client = new OpenAI(baseURL ? { apiKey, baseURL } : { apiKey });
   const messages = [{ role: instructionRole(model, useDeveloperRole), content: system }];
@@ -150,13 +155,22 @@ async function streamOpenAI({ apiKey, baseURL, model, system, turns, imageDataUr
       messages.push({ role: t.role, content: t.text });
     }
   });
+  const request = { model, messages, stream: responseOptions?.stream !== false };
+  if (responseOptions && responseOptions.reasoningEffort !== 'auto' && !isNonReasoningModel(model)) {
+    request.reasoning_effort = responseOptions.reasoningEffort;
+  }
   const stream = await createChatCompletionWithTokenLimit(
     client,
-    { model, messages, stream: true },
+    request,
     maxTokens,
     preferMaxCompletionTokens,
     signal
   );
+  if (!request.stream) {
+    const full = stream.choices?.[0]?.message?.content || '';
+    if (full) onToken(full);
+    return full;
+  }
   let full = '';
   for await (const part of stream) {
     const d = part.choices && part.choices[0] && part.choices[0].delta && part.choices[0].delta.content;
@@ -384,7 +398,10 @@ function createLLM(settings) {
       if (!ready) throw new Error(configurationError || `Complete the ${provider} provider settings.`);
       const args = { apiKey, baseURL, endpoint, model, maxTokens, ...params, turns: sanitizeTurns(params.turns) };
       try {
-        if (provider === 'openai') return await streamOpenAI({ ...args, preferMaxCompletionTokens: true, useDeveloperRole: true });
+        if (provider === 'openai') return await streamOpenAI({
+          ...args, preferMaxCompletionTokens: true, useDeveloperRole: true,
+          responseOptions: normalizeOpenAIResponseSettings(settings.openaiResponse, { [tier]: model })[tier]
+        });
         if (provider === CUSTOM_PROVIDER) return await streamOpenAI(args);
         if (provider === 'ollama') return await streamOllama(args);
         if (provider === 'groq') return await streamOpenAI({ ...args, baseURL: 'https://api.groq.com/openai/v1' });

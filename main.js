@@ -744,7 +744,7 @@ async function executeFeature(request) {
       : (mode === 'ask' ? userText : mode === 'answerThis' ? `"${(questionFrame.exactQuestion || userText || '').slice(0, 60)}${(questionFrame.exactQuestion || userText || '').length > 60 ? '…' : ''}"` : null);
 
     if (questionFrame && questionFrame.prohibitedAssistance) state.assistancePaused = true;
-    if (isLiveAnswerMode && state.assistancePaused) {
+    if ((isLiveAnswerMode || mode === 'simplify' || mode === 'example') && state.assistancePaused) {
       metric.decision = 'paused';
       send('llm:start', { responseId, userBubble, small: true, category: 'paused', questionFrame });
       send('llm:token', {

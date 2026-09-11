@@ -107,12 +107,13 @@ test('say prompt is a grounded rescue card, not a generic paragraph', () => {
   const prompt = `${system}\n${user}`;
 
   assert.match(prompt, /\*\*Say now:\*\*/);
-  assert.match(prompt, /\*\*Anchors:\*\*/);
+  assert.match(prompt, /\*\*How it works:\*\*/);
+  assert.match(prompt, /\*\*More detail:\*\*/);
   assert.match(prompt, /fundamental distinction/i);
   assert.match(prompt, /never invent an employer, project, tool, metric, salary/i);
   assert.match(prompt, /That is not the fundamental difference/i);
   assert.match(prompt, /They both use nearest neighbors/i);
-  assert.match(prompt, /under 70 words/i);
+  assert.match(prompt, /optional depth in More detail/i);
 });
 
 test('answerThis treats a reviewed low-punctuation question as confirmed', () => {
